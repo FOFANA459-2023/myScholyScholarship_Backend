@@ -140,29 +140,29 @@ WSGI_APPLICATION = 'scholarship_backend.wsgi.application'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
 import os
-import dj_database_url
+import socket
+from pathlib import Path
 
-# Build default database URL dynamically from environment variables
-db_user = os.environ.get("DB_USER", "")
-db_password = os.environ.get("DB_PASSWORD", "")
-db_name = os.environ.get("DB_NAME", "")
-db_host = os.environ.get("DB_HOST", "")
-db_port = os.environ.get("DB_PORT", "5432")
-db_sslmode = os.environ.get("DB_SSLMODE", "require")
-
-# Construct DATABASE_URL dynamically
-database_url = f"postgres://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
 
 DATABASES = {
-    "default": dj_database_url.parse(database_url, conn_max_age=600, ssl_require=(db_sslmode == "require")),
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': os.environ.get('DB_NAME', 'postgres'),
+        'USER': os.environ.get('DB_USER', 'postgres'),
+        'PASSWORD': os.environ.get('DB_PASSWORD', ''),
+        'HOST': socket.gethostbyname(os.environ.get('DB_HOST', 'localhost')),  # Force IPv4
+        'PORT': os.environ.get('DB_PORT', '5432'),
+        'OPTIONS': {
+            'sslmode': 'require',
+        },
+    },
 
     # Optional legacy SQLite
     "sqlite": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": BASE_DIR / "db.sqlite3",
-    },
+    }
 }
-
 
 
 # Password validation
