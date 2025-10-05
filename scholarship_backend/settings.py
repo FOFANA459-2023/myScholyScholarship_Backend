@@ -144,13 +144,15 @@ import socket
 from pathlib import Path
 
 
+import os
+
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': os.environ.get('DB_NAME', 'postgres'),
         'USER': os.environ.get('DB_USER', 'postgres'),
         'PASSWORD': os.environ.get('DB_PASSWORD', ''),
-        'HOST': socket.gethostbyname(os.environ.get('DB_HOST', 'localhost')),  # Force IPv4
+        'HOST': os.environ.get('DB_HOST', 'localhost'),  # <- remove socket.gethostbyname
         'PORT': os.environ.get('DB_PORT', '5432'),
         'OPTIONS': {
             'sslmode': 'require',
