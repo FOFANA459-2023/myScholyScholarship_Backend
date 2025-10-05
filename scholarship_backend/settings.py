@@ -33,11 +33,16 @@ SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'changeme-in-dev')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DJANGO_DEBUG', 'True').lower() == 'true'
 
-ALLOWED_HOSTS = ["myscholybackend.onrender.com", "localhost", "127.0.0.1"]
+ALLOWED_HOSTS = [
+    "myscholyscholarship-backend.onrender.com",
+    "localhost",
+    "127.0.0.1"
+]
+
 
 # Render/host security settings
 CSRF_TRUSTED_ORIGINS = [
-    "https://myscholybackend.onrender.com",
+    "https://myscholyscholarship-backend.onrender.com",
     "http://localhost:8000",
 ]
 
