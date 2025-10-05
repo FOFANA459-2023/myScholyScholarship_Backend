@@ -134,25 +134,30 @@ WSGI_APPLICATION = 'scholarship_backend.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
+import os
+import dj_database_url
+
+# Build default database URL dynamically from environment variables
+db_user = os.environ.get("DB_USER", "")
+db_password = os.environ.get("DB_PASSWORD", "")
+db_name = os.environ.get("DB_NAME", "")
+db_host = os.environ.get("DB_HOST", "")
+db_port = os.environ.get("DB_PORT", "5432")
+db_sslmode = os.environ.get("DB_SSLMODE", "require")
+
+# Construct DATABASE_URL dynamically
+database_url = f"postgres://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
+
 DATABASES = {
-    'default': {
-        'ENGINE': os.environ.get('DB_ENGINE', 'django.db.backends.postgresql'),
-        'NAME': os.environ.get('DB_NAME', ''),
-        'USER': os.environ.get('DB_USER', ''),
-        'PASSWORD': os.environ.get('DB_PASSWORD', ''),
-        'HOST': os.environ.get('DB_HOST', ''),
-        'PORT': os.environ.get('DB_PORT', ''),
-        'OPTIONS': {
-            'sslmode': os.environ.get('DB_SSLMODE', 'require'),
-        },
-    }
-    ,
-    # Secondary SQLite alias to export legacy data
-    'sqlite': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
+    "default": dj_database_url.parse(database_url, conn_max_age=600, ssl_require=(db_sslmode == "require")),
+
+    # Optional legacy SQLite
+    "sqlite": {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": BASE_DIR / "db.sqlite3",
+    },
 }
+
 
 
 # Password validation
