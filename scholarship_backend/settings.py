@@ -139,32 +139,39 @@ WSGI_APPLICATION = 'scholarship_backend.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
-import os
-import socket
-from pathlib import Path
-
 
 import os
+import psycopg
 
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.environ.get('DB_NAME', 'postgres'),
-        'USER': os.environ.get('DB_USER', 'postgres'),
-        'PASSWORD': os.environ.get('DB_PASSWORD', ''),
-        'HOST': os.environ.get('DB_HOST', 'localhost'),  # <- remove socket.gethostbyname
-        'PORT': os.environ.get('DB_PORT', '5432'),
-        'OPTIONS': {
-            'sslmode': 'require',
+    "default": {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": os.environ.get("DB_NAME", "postgres"),
+        "USER": os.environ.get("DB_USER", "postgres"),
+        "PASSWORD": os.environ.get("DB_PASSWORD", ""),
+        "HOST": os.environ.get("DB_HOST", "localhost"),
+        "PORT": os.environ.get("DB_PORT", "5432"),
+        "OPTIONS": {
+            "sslmode": "require",
+            # Force psycopg to use IPv4 instead of IPv6
+            "connect_timeout": 10,
         },
     },
-
     # Optional legacy SQLite
     "sqlite": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": BASE_DIR / "db.sqlite3",
-    }
+    },
 }
+
+# Force psycopg to use IPv4 by monkey-patching the host resolution
+import socket
+original_getaddrinfo = socket.getaddrinfo
+
+def force_ipv4(host, *args, **kwargs):
+    return original_getaddrinfo(host, *args, family=socket.AF_INET, **kwargs)
+
+socket.getaddrinfo = force_ipv4
 
 
 # Password validation
