@@ -141,7 +141,13 @@ WSGI_APPLICATION = 'scholarship_backend.wsgi.application'
 
 
 import os
-import psycopg
+import socket
+
+# Force psycopg to use IPv4 by monkey-patching host resolution
+original_getaddrinfo = socket.getaddrinfo
+def force_ipv4(host, *args, **kwargs):
+    return original_getaddrinfo(host, *args, family=socket.AF_INET, **kwargs)
+socket.getaddrinfo = force_ipv4
 
 DATABASES = {
     "default": {
@@ -153,25 +159,16 @@ DATABASES = {
         "PORT": os.environ.get("DB_PORT", "5432"),
         "OPTIONS": {
             "sslmode": "require",
-            # Force psycopg to use IPv4 instead of IPv6
             "connect_timeout": 10,
         },
     },
     # Optional legacy SQLite
     "sqlite": {
         "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+        "NAME": os.environ.get("SQLITE_PATH", BASE_DIR / "db.sqlite3"),
     },
 }
 
-# Force psycopg to use IPv4 by monkey-patching the host resolution
-import socket
-original_getaddrinfo = socket.getaddrinfo
-
-def force_ipv4(host, *args, **kwargs):
-    return original_getaddrinfo(host, *args, family=socket.AF_INET, **kwargs)
-
-socket.getaddrinfo = force_ipv4
 
 
 # Password validation
