@@ -18,10 +18,11 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Load environment variables from .env located at BASE_DIR; if not found, try project root
-env_loaded = load_dotenv(BASE_DIR / '.env')
+# Use override=True to ensure .env values take precedence in local/dev and avoid stale system envs
+env_loaded = load_dotenv(BASE_DIR / '.env', override=True)
 if not env_loaded:
     # Fallback to parent directory (project root)
-    load_dotenv(BASE_DIR.parent / '.env')
+    load_dotenv(BASE_DIR.parent / '.env', override=True)
 
 
 # Quick-start development settings - unsuitable for production
@@ -135,7 +136,6 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'scholarship_backend.wsgi.application'
 
-
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
@@ -153,19 +153,19 @@ DATABASES = {
             "sslmode": os.environ.get("DB_SSLMODE", "require"),
             "connect_timeout": 10,  # optional, prevents long hangs
         },
+        # Supabase PgBouncer (transaction pooler) friendly defaults
+        # In transaction pooling, avoid reusing connections and server-side cursors
+        "DISABLE_SERVER_SIDE_CURSORS": os.environ.get("DB_POOL_MODE", "").lower() == "transaction",
     },
     # Optional legacy SQLite
     "sqlite": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": BASE_DIR / "db.sqlite3",
-    },
+    }
 }
 
 
-
-
 # Password validation
-# https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
 
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -179,10 +179,8 @@ AUTH_PASSWORD_VALIDATORS = [
     },
     {
         'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
-    },
+    }
 ]
-
-
 # Internationalization
 # https://docs.djangoproject.com/en/5.2/topics/i18n/
 
