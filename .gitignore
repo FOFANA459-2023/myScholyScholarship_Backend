@@ -1,41 +1,67 @@
 # Python
 __pycache__/
 *.py[cod]
-*.pyc
-*.pyo
-*.pyd
-*.py.class
+*$py.class
+*.so
 
-# Environments
-.env
-.env.*
-**/.env
-.venv/
-venv/
-ENV/
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
 # Django
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Environment variables - CRITICAL
+.env
+.env.*
+!.env.example
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Static files
 staticfiles/
 media/
 
-# VSCode
+# IDE
 .vscode/
-
-# Node
-node_modules/
+.idea/
+*.swp
+*.swo
 
 # OS
- 
-# Allow environment template
-!.env.example
 .DS_Store
 Thumbs.db
 
-# Database dumps and fixtures (keep local, ignore in Git)
-scholarship_backend/auth.json
-scholarship_backend/users.json
-scholarship_backend/tokens.json
-scholarship_backend/allauth.json
-scholarship_backend/auth_meta.json
-scholarship_backend/contenttypes.json
-scholarship_backend/scholarships.json
+# Backup files
+*.bak
+*.backup
+
+# Security
+*.key
+*.pem
+*.crt
+credentials.json
+secrets.json
