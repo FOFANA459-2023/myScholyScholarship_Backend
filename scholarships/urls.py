@@ -29,9 +29,9 @@ urlpatterns = [
     # Admin URLs
     path("admin/scholarships/", views.admin_scholarships, name="admin-scholarships"),
     path(
-        "admin/scholarships/<int:pk>/delete/",
-        views.delete_scholarship,
-        name="delete-scholarship",
+        "admin/scholarships/<int:pk>/",
+        views.admin_scholarship_detail,
+        name="admin-scholarship-detail",
     ),
     # Admin User Management
     path("admins/", views.admin_users, name="admin-users"),  # GET, POST

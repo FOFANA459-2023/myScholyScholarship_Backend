@@ -178,12 +178,54 @@ def user_profile(request):
 
 
 # Admin Views
-@api_view(["GET"])
+@api_view(["GET", "POST"])
 @permission_classes([IsAdmin])
 def admin_scholarships(request):
-    scholarships = Scholarship.objects.all()
-    serializer = ScholarshipSerializer(scholarships, many=True)
-    return Response(serializer.data, status=status.HTTP_200_OK)
+    if request.method == "GET":
+        scholarships = Scholarship.objects.all()
+        serializer = ScholarshipSerializer(scholarships, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    elif request.method == "POST":
+        serializer = ScholarshipSerializer(data=request.data)
+        if serializer.is_valid():
+            scholarship = serializer.save()
+            return Response(
+                ScholarshipSerializer(scholarship).data, status=status.HTTP_201_CREATED
+            )
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(["GET", "PUT", "DELETE"])
+@permission_classes([IsAdmin])
+def admin_scholarship_detail(request, pk):
+    try:
+        scholarship = Scholarship.objects.get(pk=pk)
+    except Scholarship.DoesNotExist:
+        return Response(
+            {"error": "Scholarship not found"}, status=status.HTTP_404_NOT_FOUND
+        )
+
+    if request.method == "GET":
+        serializer = ScholarshipSerializer(scholarship)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    elif request.method == "PUT":
+        serializer = ScholarshipSerializer(scholarship, data=request.data)
+        if serializer.is_valid():
+            updated_scholarship = serializer.save()
+            return Response(
+                ScholarshipSerializer(updated_scholarship).data,
+                status=status.HTTP_200_OK,
+            )
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    elif request.method == "DELETE":
+        scholarship.delete()
+        return Response(
+            {"message": "Scholarship deleted successfully"},
+            status=status.HTTP_204_NO_CONTENT,
+        )
 
 
 # Admin User Management Endpoints
@@ -435,21 +477,6 @@ def delete_admin_user(request, user_id):
         return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
 
 
-@api_view(["DELETE"])
-@permission_classes([IsAdmin])
-def delete_scholarship(request, pk):
-    try:
-        scholarship = Scholarship.objects.get(pk=pk)
-        scholarship.delete()
-        return Response(
-            {"message": "Scholarship deleted successfully"}, status=status.HTTP_200_OK
-        )
-    except Scholarship.DoesNotExist:
-        return Response(
-            {"error": "Scholarship not found"}, status=status.HTTP_404_NOT_FOUND
-        )
-
-
 @api_view(["GET"])
 @permission_classes([IsAdmin])
 def admin_statistics(request):
@@ -470,11 +497,11 @@ def admin_statistics(request):
             created_at__gte=thirty_days_ago
         ).count()
 
-        # Get scholarships by country (top 5)
+        # Get scholarships by degree level (top 5)
         from django.db.models import Count
 
-        scholarships_by_country = list(
-            Scholarship.objects.values("host_country")
+        scholarships_by_degree = list(
+            Scholarship.objects.values("degree_level")
             .annotate(count=Count("id"))
             .order_by("-count")[:5]
         )
@@ -486,7 +513,7 @@ def admin_statistics(request):
             "total_students": total_students,
             "total_admins": total_admins,
             "recent_scholarships": recent_scholarships,
-            "scholarships_by_country": scholarships_by_country,
+            "scholarships_by_degree": scholarships_by_degree,
         }
 
         return Response(statistics, status=status.HTTP_200_OK)
