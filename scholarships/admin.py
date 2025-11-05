@@ -11,8 +11,8 @@ class ScholarshipAdmin(admin.ModelAdmin):
 
 @admin.register(Student)
 class StudentAdmin(admin.ModelAdmin):
-    list_display = ('user', 'phone', 'country', 'created_at')
-    list_filter = ('country', 'created_at')
+    list_display = ('user', 'phone', 'nationality', 'country_of_residence', 'created_at')
+    list_filter = ('country_of_residence', 'created_at')
     search_fields = ('user__username', 'user__email', 'user__first_name', 'user__last_name')
 
 @admin.register(Admin)

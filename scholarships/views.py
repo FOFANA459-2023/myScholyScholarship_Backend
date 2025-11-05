@@ -1,4 +1,5 @@
 from rest_framework import generics, status
+from django.http import HttpResponse
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
@@ -16,6 +17,8 @@ from .serializers import (
 )
 from django.db import transaction
 from datetime import datetime, timedelta
+from django.utils import timezone
+from django.db.models import Count
 
 
 # Scholarship Views
@@ -491,6 +494,19 @@ def admin_statistics(request):
         total_students = Student.objects.count()
         total_admins = Admin.objects.count()
 
+        # Get sign-up statistics
+        today = timezone.now().date()
+        start_of_week = today - timedelta(days=today.weekday())
+        start_of_month = today.replace(day=1)
+        start_of_year = today.replace(month=1, day=1)
+
+        weekly_signups = User.objects.filter(date_joined__date__gte=start_of_week).count()
+        monthly_signups = User.objects.filter(date_joined__date__gte=start_of_month).count()
+        yearly_signups = User.objects.filter(date_joined__date__gte=start_of_year).count()
+
+        # Get total unique countries from students
+        total_countries = Student.objects.exclude(country_of_residence__isnull=True).exclude(country_of_residence__exact='').values('country_of_residence').distinct().count()
+
         # Get recent scholarships (last 30 days)
         thirty_days_ago = datetime.now() - timedelta(days=30)
         recent_scholarships = Scholarship.objects.filter(
@@ -506,14 +522,31 @@ def admin_statistics(request):
             .order_by("-count")[:5]
         )
 
+        scholarship_countries = list(
+            Scholarship.objects.values_list("host_country", flat=True)
+            .distinct()
+            .order_by("host_country")
+        )
+        scholarship_degrees = list(
+            Scholarship.objects.values_list("degree_level", flat=True)
+            .distinct()
+            .order_by("degree_level")
+        )
+
         statistics = {
             "total_scholarships": total_scholarships,
             "active_scholarships": active_scholarships,
             "total_users": total_users,
             "total_students": total_students,
             "total_admins": total_admins,
+            "weekly_signups": weekly_signups,
+            "monthly_signups": monthly_signups,
+            "yearly_signups": yearly_signups,
+            "total_countries": total_countries,
             "recent_scholarships": recent_scholarships,
             "scholarships_by_degree": scholarships_by_degree,
+            "scholarship_countries": scholarship_countries,
+            "scholarship_degrees": scholarship_degrees,
         }
 
         return Response(statistics, status=status.HTTP_200_OK)
@@ -592,8 +625,48 @@ def export_users_csv(request):
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-from django.http import HttpResponse
+@api_view(["GET"])
+@permission_classes([IsAdmin])
+def export_scholarships_csv(request):
+    """
+    Export all active scholarships to CSV format.
+    """
+    try:
+        import csv
+        from django.http import HttpResponse
+        from datetime import datetime
 
+        response = HttpResponse(content_type="text/csv")
+        response["Content-Disposition"] = (
+            f'attachment; filename="active_scholarships_{datetime.now().strftime("%Y-%m-%d")}.csv"'
+        )
+
+        writer = csv.writer(response)
+        writer.writerow(
+            [
+                "Name",
+                "Host Country",
+                "Degree Level",
+                "Deadline",
+            ]
+        )
+
+        scholarships = Scholarship.objects.filter(is_active=True)
+
+        for scholarship in scholarships:
+            writer.writerow(
+                [
+                    scholarship.name,
+                    scholarship.host_country,
+                    scholarship.degree_level,
+                    scholarship.deadline,
+                ]
+            )
+
+        return response
+
+    except Exception as e:
+        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @api_view(["GET"])
 @permission_classes([AllowAny])

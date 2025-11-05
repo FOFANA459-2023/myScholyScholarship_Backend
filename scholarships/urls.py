@@ -41,4 +41,5 @@ urlpatterns = [
     # Admin Statistics and Export
     path("admin/statistics/", views.admin_statistics, name="admin-statistics"),
     path("admin/users/export/", views.export_users_csv, name="export-users-csv"),
+    path("admin/scholarships/export/", views.export_scholarships_csv, name="export-scholarships-csv"),
 ]
