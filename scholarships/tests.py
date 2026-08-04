@@ -309,9 +309,21 @@ class AdminApiTests(TestCase):
         search = self.client.get("/api/admin/users/?q=amara").json()
         self.assertEqual([row["username"] for row in search["results"]], ["amara"])
 
-    def test_user_directory_requires_admin(self):
+    def test_user_directory_requires_super_admin(self):
         anon = APIClient()
         self.assertIn(anon.get("/api/admin/users/").status_code, (401, 403))
+
+        # A regular admin manages scholarships, not people: the directory and
+        # the users export both stay super-admin-only.
+        plain_admin = User.objects.create_user(
+            username="plain", password="Str0ngPassw0rd!"
+        )
+        Admin.objects.create(user=plain_admin, is_super_admin=False)
+        cache.clear()
+        as_admin = APIClient()
+        as_admin.force_authenticate(plain_admin)
+        self.assertEqual(as_admin.get("/api/admin/users/").status_code, 403)
+        self.assertEqual(as_admin.get("/api/admin/users/export/").status_code, 403)
 
     def test_users_export_includes_student_profile(self):
         response = self.client.get("/api/admin/users/export/")

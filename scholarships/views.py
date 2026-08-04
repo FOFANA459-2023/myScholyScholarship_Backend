@@ -56,7 +56,7 @@ from .cache import (
 from .filters import apply_filters, normalize_params, split_terms
 from .models import Admin, ContactMessage, Scholarship, Student
 from .pagination import ScholarshipPagination
-from .permissions import IsAdmin, IsAdminOrReadOnly, role_for
+from .permissions import IsAdmin, IsAdminOrReadOnly, IsSuperAdmin, role_for
 from .serializers import (
     AdminSerializer,
     ContactMessageSerializer,
@@ -896,10 +896,11 @@ def admin_statistics(request):
 
 
 @api_view(["GET"])
-@permission_classes([IsAdmin])
+@permission_classes([IsSuperAdmin])
 def admin_user_directory(request):
     """Paginated, searchable roster of every account with its profile data -
-    the on-screen counterpart of the users CSV export.
+    the on-screen counterpart of the users CSV export. Super admins only:
+    regular admins manage scholarships, not people.
 
     Personal data handling: the payload is cached only server-side, in the
     versioned users namespace (any account write invalidates it, and the
@@ -985,11 +986,11 @@ def _stream_csv(filename, header, rows):
 
 
 @api_view(["GET"])
-@permission_classes([IsAdmin])
+@permission_classes([IsSuperAdmin])
 def export_users_csv(request):
     """Every account with its role and, for students, the profile fields the
     signup form collects - so the export is usable for outreach without a
-    second lookup."""
+    second lookup. Super admins only, same as the on-screen directory."""
     stamp = timezone.now().strftime("%Y-%m-%d")
 
     def rows():
