@@ -38,14 +38,23 @@ class ScholarshipListTests(TestCase):
         )
         make_scholarship(name="Hidden Award", host_country="Japan", is_active=False)
 
-    def test_list_returns_only_active_and_is_paginated(self):
+    def test_list_returns_only_live_and_is_paginated(self):
+        """The public board shows live rows only: active AND still open.
+        Hidden and expired rows both belong to the admin archive."""
         response = self.client.get("/api/scholarships/")
         self.assertEqual(response.status_code, 200)
         body = response.json()
-        self.assertEqual(body["count"], 3)
+        self.assertEqual(body["count"], 2)
         self.assertIn("results", body)
         self.assertIn("total_pages", body)
-        self.assertNotIn("Hidden Award", {row["name"] for row in body["results"]})
+        names = {row["name"] for row in body["results"]}
+        self.assertNotIn("Hidden Award", names)
+        self.assertNotIn("Expired Award", names)
+
+    def test_anonymous_cannot_request_archived_view(self):
+        body = self.client.get("/api/scholarships/?view=archived").json()
+        names = {row["name"] for row in body["results"]}
+        self.assertEqual(names, {"Chevening", "Mastercard Foundation"})
 
     def test_list_payload_omits_large_text_columns(self):
         row = self.client.get("/api/scholarships/").json()["results"][0]
@@ -57,13 +66,15 @@ class ScholarshipListTests(TestCase):
         self.assertEqual(body["count"], 1)
         self.assertEqual(body["results"][0]["name"], "Chevening")
 
-    def test_country_and_ongoing_filters(self):
+    def test_country_filter(self):
+        # Both Japan rows are archived (one expired, one hidden), so the
+        # public board has nothing to show for that country.
         self.assertEqual(
-            self.client.get("/api/scholarships/?country=Japan").json()["count"], 1
+            self.client.get("/api/scholarships/?country=Japan").json()["count"], 0
         )
-        body = self.client.get("/api/scholarships/?ongoing=true").json()
-        self.assertEqual(body["count"], 2)
-        self.assertNotIn("Expired Award", {r["name"] for r in body["results"]})
+        self.assertEqual(
+            self.client.get("/api/scholarships/?country=Rwanda").json()["count"], 1
+        )
 
     def test_conditional_request_returns_304(self):
         first = self.client.get("/api/scholarships/")
@@ -75,12 +86,14 @@ class ScholarshipListTests(TestCase):
         make_scholarship(name="Brand New Award")
         second = self.client.get("/api/scholarships/")
         self.assertNotEqual(first["ETag"], second["ETag"])
-        self.assertEqual(second.json()["count"], 4)
+        self.assertEqual(second.json()["count"], 3)
 
     def test_facets_endpoint(self):
+        """Facets describe the live board only - archived rows must not add
+        dropdown options that no visible scholarship matches."""
         body = self.client.get("/api/scholarships/facets/").json()
         countries = {row["value"] for row in body["countries"]}
-        self.assertEqual(countries, {"United Kingdom", "Rwanda", "Japan"})
+        self.assertEqual(countries, {"United Kingdom", "Rwanda"})
         self.assertTrue(all("count" in row for row in body["degree_levels"]))
 
     def test_hidden_scholarship_is_not_readable_by_id(self):
@@ -180,14 +193,58 @@ class AdminApiTests(TestCase):
         make_scholarship()
         make_scholarship(name="Inactive", is_active=False)
 
-    def test_admin_listing_includes_inactive(self):
+    def test_admin_listing_views(self):
+        """Default view matches the live board; archived rows have their own
+        view; ``all`` returns everything for the client-side index."""
+        self.assertEqual(self.client.get("/api/admin/scholarships/").json()["count"], 1)
+        archived = self.client.get("/api/admin/scholarships/?view=archived").json()
+        self.assertEqual(archived["count"], 1)
+        self.assertEqual(archived["results"][0]["name"], "Inactive")
+        self.assertEqual(
+            self.client.get("/api/admin/scholarships/?view=all").json()["count"], 2
+        )
+
+    def test_repost_reactivates_when_deadline_ahead(self):
+        hidden = Scholarship.objects.get(name="Inactive")
+        response = self.client.post(f"/api/admin/scholarships/{hidden.pk}/repost/")
+        self.assertEqual(response.status_code, 200, response.content)
+        hidden.refresh_from_db()
+        self.assertTrue(hidden.is_active)
+        # The write must invalidate the cached lists immediately.
         self.assertEqual(self.client.get("/api/admin/scholarships/").json()["count"], 2)
+
+    def test_repost_rejected_when_deadline_passed(self):
+        expired = make_scholarship(
+            name="Too Late",
+            is_active=False,
+            deadline=timezone.now().date() - timedelta(days=1),
+        )
+        response = self.client.post(f"/api/admin/scholarships/{expired.pk}/repost/")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("deadline", response.json()["error"].lower())
+        expired.refresh_from_db()
+        self.assertFalse(expired.is_active)
+
+    def test_repost_requires_admin(self):
+        scholarship = Scholarship.objects.first()
+        anon = APIClient()
+        response = anon.post(f"/api/admin/scholarships/{scholarship.pk}/repost/")
+        self.assertIn(response.status_code, (401, 403))
 
     def test_statistics_shape(self):
         body = self.client.get("/api/admin/statistics/").json()
         self.assertEqual(body["total_scholarships"], 2)
         self.assertEqual(body["active_scholarships"], 1)
         self.assertEqual(body["total_admins"], 1)
+
+    def test_statistics_refresh_after_scholarship_write(self):
+        """The dashboard mixes user and scholarship numbers; a scholarship
+        write must change its ETag and payload, not serve a 304 forever."""
+        first = self.client.get("/api/admin/statistics/")
+        make_scholarship(name="Fresh Award")
+        second = self.client.get("/api/admin/statistics/")
+        self.assertNotEqual(first["ETag"], second["ETag"])
+        self.assertEqual(second.json()["total_scholarships"], 3)
 
     def test_admin_roster_has_no_n_plus_one(self):
         """Adding admins must not add queries - the old loop ran one per row."""
@@ -210,13 +267,35 @@ class AdminApiTests(TestCase):
         response = self.client.delete(f"/api/admins/{self.super_admin.id}/")
         self.assertEqual(response.status_code, 403)
 
-    def test_scholarship_export_streams_csv(self):
+    def test_scholarship_export_streams_full_catalogue(self):
         response = self.client.get("/api/admin/scholarships/export/")
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.streaming)
+        self.assertIn("attachment", response["Content-Disposition"])
         body = b"".join(response.streaming_content).decode()
-        self.assertIn("Name,Host Country,Degree Level,Deadline,Link", body)
-        self.assertNotIn("Inactive", body)
+        header = body.splitlines()[0]
+        for column in ("ID", "Name", "Status", "Link", "Description", "Eligibility"):
+            self.assertIn(column, header)
+        # Archived rows are exported too, labelled by status.
+        self.assertIn("Inactive", body)
+        self.assertIn("Hidden", body)
+        self.assertIn("Live", body)
+
+    def test_users_export_includes_student_profile(self):
+        response = self.client.get("/api/admin/users/export/")
+        self.assertEqual(response.status_code, 200)
+        body = b"".join(response.streaming_content).decode()
+        header = body.splitlines()[0]
+        for column in (
+            "Email",
+            "User Type",
+            "Phone",
+            "Country of Citizenship",
+            "Country of Residence",
+            "Education Level",
+        ):
+            self.assertIn(column, header)
+        self.assertIn("Super Admin", body)
 
 
 class ContactTests(TestCase):

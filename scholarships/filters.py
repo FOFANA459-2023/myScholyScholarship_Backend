@@ -10,6 +10,8 @@ import re
 from django.db.models import Q
 from django.utils import timezone
 
+from .cache import NS_SCHOLARSHIPS, TTL_FACETS, cached, make_key
+
 # A parenthesised list, e.g. "Multiple countries (France, Malta, Germany)".
 _LIST_IN_PARENS = re.compile(r"\(([^)]*,[^)]*)\)")
 _SEPARATORS = re.compile(r"[,/;]|\band\b|&", re.IGNORECASE)
@@ -43,20 +45,39 @@ def split_terms(value):
     return terms
 
 
-def _rows_matching_term(queryset, field, wanted):
+def _term_map(field):
+    """Map each parsed term to the raw column values that contain it.
+
+    Built over the whole table from one distinct query and cached in the
+    versioned scholarship namespace, so a filtered request costs zero extra
+    queries. Values coming from rows the current visibility filter excludes
+    simply match nothing, so one table-wide map serves every view. Any write
+    bumps the version and the map rebuilds.
+    """
+    from .models import Scholarship
+
+    key = make_key(NS_SCHOLARSHIPS, "term-map", field=field)
+
+    def build():
+        mapping = {}
+        rows = Scholarship.objects.values_list(field, flat=True).distinct()
+        for raw in rows:
+            for term in split_terms(raw):
+                mapping.setdefault(term.casefold(), []).append(raw)
+        return mapping
+
+    return cached(key, TTL_FACETS, build)
+
+
+def _rows_matching_term(field, wanted):
     """Raw column values whose parsed terms include ``wanted``.
 
     Matching on the parsed terms keeps "Graduate" from selecting
     "Postgraduate" the way a substring match would, while still matching the
-    rows stored as "Graduate, Postgraduate". The distinct list is small, and
-    filtering on it stays a single indexed ``IN`` query.
+    rows stored as "Graduate, Postgraduate". The list is small, and filtering
+    on it stays a single indexed ``IN`` query.
     """
-    target = wanted.casefold()
-    return [
-        raw
-        for raw in queryset.values_list(field, flat=True).distinct()
-        if any(term.casefold() == target for term in split_terms(raw))
-    ]
+    return _term_map(field).get(wanted.casefold(), [])
 
 ORDERING_FIELDS = {
     "newest": ("-created_at",),
@@ -66,22 +87,30 @@ ORDERING_FIELDS = {
 }
 DEFAULT_ORDERING = "newest"
 
-TRUTHY = {"1", "true", "yes", "on"}
+# What slice of the catalogue a request sees.
+#   live     - active AND the deadline has not passed; the only view the
+#              public board ever gets.
+#   archived - hidden by an admin OR past its deadline; the admin archive.
+#   all      - everything; used by the admin client to build its local index.
+VIEWS = {"live", "archived", "all"}
+DEFAULT_VIEW = "live"
 
 
-def _flag(params, key):
-    return str(params.get(key, "")).strip().lower() in TRUTHY
-
-
-def normalize_params(params):
+def normalize_params(params, *, allow_privileged=False):
     """Reduce raw query params to the canonical set we filter and cache on.
 
     Normalising first means ``?q=Chevening`` and ``?q=chevening&page=1`` share a
     cache entry instead of producing two identical-but-separate results.
+    ``view`` is coerced back to "live" for unprivileged callers *before*
+    caching, so an anonymous ``?view=archived`` cannot mint extra cache keys.
     """
     ordering = str(params.get("ordering", "")).strip().lower()
     if ordering not in ORDERING_FIELDS:
         ordering = DEFAULT_ORDERING
+
+    view = str(params.get("view", "")).strip().lower()
+    if view not in VIEWS or not allow_privileged:
+        view = DEFAULT_VIEW
 
     try:
         page = max(1, int(params.get("page", 1)))
@@ -98,18 +127,26 @@ def normalize_params(params):
         "q": str(params.get("q", "")).strip()[:120],
         "country": str(params.get("country", "")).strip()[:100],
         "degree": str(params.get("degree", "")).strip()[:100],
-        "ongoing": _flag(params, "ongoing"),
-        "include_inactive": _flag(params, "include_inactive"),
+        "view": view,
         "ordering": ordering,
         "page": page,
         "page_size": page_size,
     }
 
 
-def apply_filters(queryset, params, *, allow_inactive=False):
+def apply_view(queryset, view):
+    """Restrict a queryset to one of the three catalogue views."""
+    today = timezone.now().date()
+    if view == "archived":
+        return queryset.filter(Q(is_active=False) | Q(deadline__lt=today))
+    if view == "all":
+        return queryset
+    return queryset.active().filter(deadline__gte=today)
+
+
+def apply_filters(queryset, params):
     """Apply normalized params to a Scholarship queryset."""
-    if not (allow_inactive and params["include_inactive"]):
-        queryset = queryset.active()
+    queryset = apply_view(queryset, params["view"])
 
     if params["q"]:
         term = params["q"]
@@ -120,14 +157,11 @@ def apply_filters(queryset, params, *, allow_inactive=False):
         )
 
     if params["country"]:
-        matches = _rows_matching_term(queryset, "host_country", params["country"])
+        matches = _rows_matching_term("host_country", params["country"])
         queryset = queryset.filter(host_country__in=matches) if matches else queryset.none()
 
     if params["degree"]:
-        matches = _rows_matching_term(queryset, "degree_level", params["degree"])
+        matches = _rows_matching_term("degree_level", params["degree"])
         queryset = queryset.filter(degree_level__in=matches) if matches else queryset.none()
-
-    if params["ongoing"]:
-        queryset = queryset.filter(deadline__gte=timezone.now().date())
 
     return queryset.order_by(*ORDERING_FIELDS[params["ordering"]])

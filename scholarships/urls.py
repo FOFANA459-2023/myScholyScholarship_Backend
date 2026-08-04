@@ -50,6 +50,11 @@ urlpatterns = [
         views.admin_scholarship_detail,
         name="admin-scholarship-detail",
     ),
+    path(
+        "admin/scholarships/<int:pk>/repost/",
+        views.admin_scholarship_repost,
+        name="admin-scholarship-repost",
+    ),
     # Admin: users
     path("admins/", views.admin_users, name="admin-users"),
     path("admins/<int:user_id>/", views.delete_admin_user, name="admin-user-detail"),

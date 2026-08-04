@@ -50,6 +50,7 @@ from .cache import (
     TTL_STATISTICS,
     cached,
     etag_for,
+    get_version,
     make_key,
 )
 from .filters import apply_filters, normalize_params, split_terms
@@ -101,25 +102,22 @@ class ScholarshipListCreateView(generics.ListCreateAPIView):
         return context
 
     def get_queryset(self):
-        params = normalize_params(self.request.query_params)
-        allow_inactive = role_for(self.request.user)["is_admin"]
-        return apply_filters(
-            Scholarship.objects.list_fields(), params, allow_inactive=allow_inactive
-        )
+        is_admin = role_for(self.request.user)["is_admin"]
+        params = normalize_params(self.request.query_params, allow_privileged=is_admin)
+        return apply_filters(Scholarship.objects.list_fields(), params)
 
     def list(self, request, *args, **kwargs):
-        params = normalize_params(request.query_params)
         is_admin = role_for(request.user)["is_admin"]
-        # Admins may see inactive rows, so their view is cached separately.
+        # Only admins may request the archived/all views, so their responses
+        # are cached (and tagged) separately from the public board.
+        params = normalize_params(request.query_params, allow_privileged=is_admin)
         scope = {"admin": is_admin, **params}
 
         etag = etag_for(NS_SCHOLARSHIPS, **scope)
         key = make_key(NS_SCHOLARSHIPS, "list", **scope)
 
         def build():
-            queryset = apply_filters(
-                Scholarship.objects.list_fields(), params, allow_inactive=is_admin
-            )
+            queryset = apply_filters(Scholarship.objects.list_fields(), params)
             page = self.paginate_queryset(queryset)
             serializer = ScholarshipListSerializer(
                 page, many=True, context=self.get_serializer_context()
@@ -181,7 +179,9 @@ def scholarship_facets(request):
     key = make_key(NS_SCHOLARSHIPS, "facets")
 
     def build():
-        active = Scholarship.objects.active()
+        # Facets describe what the public board can show: live rows only.
+        # Archived scholarships must not add options no visible row matches.
+        active = Scholarship.objects.active().open_for_application()
 
         def tally(field):
             """Count scholarships per individual term stored in ``field``.
@@ -492,19 +492,31 @@ def password_reset_confirm(request):
 @api_view(["GET", "POST"])
 @permission_classes([IsAdmin])
 def admin_scholarships(request):
-    """Admin listing (includes inactive rows) and create."""
+    """Admin listing and create.
+
+    ``?view=live`` (default) matches the public board, ``?view=archived``
+    returns hidden or expired rows, and ``?view=all`` returns everything.
+
+    Cached like the public board: keys live in the versioned scholarship
+    namespace, so any write invalidates them immediately and the response can
+    never be stale. Headers stay private - only the server holds a copy.
+    """
     if request.method == "GET":
-        params = normalize_params(request.query_params)
-        params["include_inactive"] = True
-        queryset = apply_filters(
-            Scholarship.objects.list_fields(), params, allow_inactive=True
-        )
-        paginator = ScholarshipPagination()
-        page = paginator.paginate_queryset(queryset, request)
-        serializer = ScholarshipListSerializer(
-            page, many=True, context={"today": timezone.now().date()}
-        )
-        return paginator.get_paginated_response(serializer.data)
+        params = normalize_params(request.query_params, allow_privileged=True)
+        etag = etag_for(NS_SCHOLARSHIPS, admin_list=True, **params)
+        key = make_key(NS_SCHOLARSHIPS, "admin-list", **params)
+
+        def build():
+            queryset = apply_filters(Scholarship.objects.list_fields(), params)
+            paginator = ScholarshipPagination()
+            page = paginator.paginate_queryset(queryset, request)
+            serializer = ScholarshipListSerializer(
+                page, many=True, context={"today": timezone.now().date()}
+            )
+            return paginator.get_paginated_response(serializer.data).data
+
+        payload = cached(key, TTL_LIST, build)
+        return _apply_cache_headers(Response(payload), etag, PRIVATE_CACHE_CONTROL)
 
     serializer = ScholarshipSerializer(
         data=request.data, context={"today": timezone.now().date()}
@@ -546,6 +558,44 @@ def admin_scholarship_detail(request, pk):
 
     scholarship.delete()
     return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+@api_view(["POST"])
+@permission_classes([IsAdmin])
+def admin_scholarship_repost(request, pk):
+    """Return an archived scholarship to the live board.
+
+    Reposting only makes sense while applications can still be submitted, so a
+    past deadline is rejected with a message telling the admin what to do
+    instead (edit the scholarship and extend the deadline first). The save
+    fires the model signals, which invalidate every cached list at once.
+    """
+    scholarship = Scholarship.objects.filter(pk=pk).first()
+    if scholarship is None:
+        return Response(
+            {"error": "Scholarship not found"}, status=status.HTTP_404_NOT_FOUND
+        )
+
+    today = timezone.now().date()
+    if scholarship.deadline < today:
+        return Response(
+            {
+                "error": (
+                    "This scholarship cannot be reposted because its deadline "
+                    "has passed. Edit it and set a new deadline first."
+                )
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if not scholarship.is_active:
+        scholarship.is_active = True
+        scholarship.save(update_fields=["is_active", "updated_at"])
+
+    return Response(
+        ScholarshipSerializer(scholarship, context={"today": today}).data,
+        status=status.HTTP_200_OK,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -776,8 +826,13 @@ def admin_statistics(request):
     This used to fire eleven separate queries on every page load. It is now
     three (scholarships, users, students) plus two grouped lookups, and the
     whole payload is cached for two minutes.
+
+    The payload mixes user AND scholarship numbers, so the key and ETag embed
+    both namespace versions - posting or archiving a scholarship refreshes
+    the dashboard immediately instead of serving 304s until a user changes.
     """
-    key = make_key(NS_USERS, "statistics")
+    scholarship_version = get_version(NS_SCHOLARSHIPS)
+    key = make_key(NS_USERS, "statistics", sv=scholarship_version)
 
     def build():
         today = timezone.now().date()
@@ -829,7 +884,9 @@ def admin_statistics(request):
 
     payload = cached(key, TTL_STATISTICS, build)
     return _apply_cache_headers(
-        Response(payload), etag_for(NS_USERS, stats=True), PRIVATE_CACHE_CONTROL
+        Response(payload),
+        etag_for(NS_USERS, stats=True, sv=scholarship_version),
+        PRIVATE_CACHE_CONTROL,
     )
 
 
@@ -857,6 +914,9 @@ def _stream_csv(filename, header, rows):
 @api_view(["GET"])
 @permission_classes([IsAdmin])
 def export_users_csv(request):
+    """Every account with its role and, for students, the profile fields the
+    signup form collects - so the export is usable for outreach without a
+    second lookup."""
     stamp = timezone.now().strftime("%Y-%m-%d")
 
     def rows():
@@ -867,9 +927,10 @@ def export_users_csv(request):
         )
         for user in queryset:
             admin = getattr(user, "admin", None)
+            student = getattr(user, "student", None)
             if admin is not None:
                 user_type = "Super Admin" if admin.is_super_admin else "Admin"
-            elif getattr(user, "student", None) is not None:
+            elif student is not None:
                 user_type = "Student"
             else:
                 user_type = "User"
@@ -880,6 +941,10 @@ def export_users_csv(request):
                 user.last_name,
                 user.email,
                 user_type,
+                student.phone if student else "",
+                student.country_of_citizenship if student else "",
+                student.country_of_residence if student else "",
+                student.get_education_level_display() if student else "",
                 user.date_joined.strftime("%Y-%m-%d %H:%M:%S") if user.date_joined else "",
                 user.last_login.strftime("%Y-%m-%d %H:%M:%S") if user.last_login else "",
                 "Yes" if user.is_active else "No",
@@ -894,6 +959,10 @@ def export_users_csv(request):
             "Last Name",
             "Email",
             "User Type",
+            "Phone",
+            "Country of Citizenship",
+            "Country of Residence",
+            "Education Level",
             "Date Joined",
             "Last Login",
             "Is Active",
@@ -905,17 +974,52 @@ def export_users_csv(request):
 @api_view(["GET"])
 @permission_classes([IsAdmin])
 def export_scholarships_csv(request):
+    """The full catalogue - live and archived - with every field an admin
+    would need to audit or re-import it, long text columns last."""
     stamp = timezone.now().strftime("%Y-%m-%d")
-    rows = (
-        Scholarship.objects.active()
-        .order_by("-created_at")
-        .values_list("name", "host_country", "degree_level", "deadline", "link")
-        .iterator(chunk_size=500)
-    )
+    today = timezone.now().date()
+
+    def rows():
+        queryset = Scholarship.objects.order_by("-created_at").iterator(chunk_size=500)
+        for row in queryset:
+            if not row.is_active:
+                row_status = "Hidden"
+            elif row.deadline < today:
+                row_status = "Expired"
+            else:
+                row_status = "Live"
+            yield [
+                row.id,
+                row.name,
+                row.host_country,
+                row.degree_level,
+                row.deadline.isoformat(),
+                row_status,
+                row.author,
+                row.link,
+                row.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                row.description,
+                row.benefits,
+                row.eligibility,
+            ]
+
     return _stream_csv(
-        f"active_scholarships_{stamp}.csv",
-        ["Name", "Host Country", "Degree Level", "Deadline", "Link"],
-        rows,
+        f"scholarships_export_{stamp}.csv",
+        [
+            "ID",
+            "Name",
+            "Host Country",
+            "Degree Level",
+            "Deadline",
+            "Status",
+            "Author",
+            "Link",
+            "Created At",
+            "Description",
+            "Benefits",
+            "Eligibility",
+        ],
+        rows(),
     )
 
 
@@ -983,6 +1087,7 @@ API_INFO = {
         "admin": {
             "scholarships": "/api/admin/scholarships/",
             "scholarship_detail": "/api/admin/scholarships/{id}/",
+            "scholarship_repost": "/api/admin/scholarships/{id}/repost/",
             "statistics": "/api/admin/statistics/",
             "users": "/api/admins/",
             "user_detail": "/api/admins/{user_id}/",
