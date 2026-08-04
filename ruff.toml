@@ -1,0 +1,18 @@
+# Lint configuration for the Django backend (run: ruff check .).
+line-length = 100
+target-version = "py313"
+exclude = ["venv", "**/migrations/**", "staticfiles"]
+
+[lint]
+# Errors, real bugs and import hygiene - not stylistic bikeshedding.
+select = ["E", "F", "W", "B", "I", "DJ"]
+ignore = [
+  # settings_test/settings_ci deliberately `import *` from settings.
+  "F403",
+  "F405",
+  # Long lines inside strings (user-facing copy) are fine.
+  "E501",
+]
+
+[lint.isort]
+known-first-party = ["scholarships", "scholarship_backend"]

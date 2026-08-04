@@ -1,3 +1,532 @@
-from django.test import TestCase
+from datetime import timedelta
 
-# Create your tests here.
+from django.contrib.auth.models import User
+from django.core.cache import cache
+from django.test import TestCase
+from django.utils import timezone
+from rest_framework.test import APIClient
+
+from .models import Admin, ContactMessage, Scholarship, Student
+
+
+def make_scholarship(**overrides):
+    defaults = {
+        "name": "Chevening Scholarship",
+        "description": "Fully funded master's study in the UK.",
+        "deadline": timezone.now().date() + timedelta(days=30),
+        "host_country": "United Kingdom",
+        "benefits": "Tuition\nStipend",
+        "eligibility": "Bachelor's degree\nTwo years work experience",
+        "degree_level": "Masters",
+        "link": "https://example.com/apply",
+        "author": "MyScholy",
+    }
+    defaults.update(overrides)
+    return Scholarship.objects.create(**defaults)
+
+
+class ScholarshipListTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        make_scholarship(name="Chevening", host_country="United Kingdom")
+        make_scholarship(name="Mastercard Foundation", host_country="Rwanda")
+        make_scholarship(
+            name="Expired Award",
+            host_country="Japan",
+            deadline=timezone.now().date() - timedelta(days=5),
+        )
+        make_scholarship(name="Hidden Award", host_country="Japan", is_active=False)
+
+    def test_list_returns_only_active_and_is_paginated(self):
+        response = self.client.get("/api/scholarships/")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["count"], 3)
+        self.assertIn("results", body)
+        self.assertIn("total_pages", body)
+        self.assertNotIn("Hidden Award", {row["name"] for row in body["results"]})
+
+    def test_list_payload_omits_large_text_columns(self):
+        row = self.client.get("/api/scholarships/").json()["results"][0]
+        for field in ("description", "benefits", "eligibility"):
+            self.assertNotIn(field, row)
+
+    def test_search_filters_server_side(self):
+        body = self.client.get("/api/scholarships/?q=chevening").json()
+        self.assertEqual(body["count"], 1)
+        self.assertEqual(body["results"][0]["name"], "Chevening")
+
+    def test_country_and_ongoing_filters(self):
+        self.assertEqual(
+            self.client.get("/api/scholarships/?country=Japan").json()["count"], 1
+        )
+        body = self.client.get("/api/scholarships/?ongoing=true").json()
+        self.assertEqual(body["count"], 2)
+        self.assertNotIn("Expired Award", {r["name"] for r in body["results"]})
+
+    def test_conditional_request_returns_304(self):
+        first = self.client.get("/api/scholarships/")
+        second = self.client.get("/api/scholarships/", HTTP_IF_NONE_MATCH=first["ETag"])
+        self.assertEqual(second.status_code, 304)
+
+    def test_write_invalidates_cache_and_etag(self):
+        first = self.client.get("/api/scholarships/")
+        make_scholarship(name="Brand New Award")
+        second = self.client.get("/api/scholarships/")
+        self.assertNotEqual(first["ETag"], second["ETag"])
+        self.assertEqual(second.json()["count"], 4)
+
+    def test_facets_endpoint(self):
+        body = self.client.get("/api/scholarships/facets/").json()
+        countries = {row["value"] for row in body["countries"]}
+        self.assertEqual(countries, {"United Kingdom", "Rwanda", "Japan"})
+        self.assertTrue(all("count" in row for row in body["degree_levels"]))
+
+    def test_hidden_scholarship_is_not_readable_by_id(self):
+        hidden = Scholarship.objects.get(name="Hidden Award")
+        self.assertEqual(self.client.get(f"/api/scholarships/{hidden.pk}/").status_code, 404)
+
+        visible = Scholarship.objects.get(name="Chevening")
+        self.assertEqual(self.client.get(f"/api/scholarships/{visible.pk}/").status_code, 200)
+
+    def test_admin_can_read_hidden_scholarship_by_id(self):
+        admin_user = User.objects.create_user(
+            username="editor", password="Str0ngPassw0rd!", is_staff=True
+        )
+        self.client.force_authenticate(admin_user)
+        hidden = Scholarship.objects.get(name="Hidden Award")
+        self.assertEqual(self.client.get(f"/api/scholarships/{hidden.pk}/").status_code, 200)
+
+    def test_anonymous_cannot_create(self):
+        response = self.client.post(
+            "/api/scholarships/", {"name": "Nope"}, format="json"
+        )
+        self.assertIn(response.status_code, (401, 403))
+
+
+class AuthTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        User.objects.create_user(
+            username="ama", email="ama@example.com", password="Str0ngPassw0rd!"
+        )
+
+    def test_login_with_username_and_with_email(self):
+        for identifier in ("ama", "ama@example.com"):
+            response = self.client.post(
+                "/api/auth/login/",
+                {"username": identifier, "password": "Str0ngPassw0rd!"},
+                format="json",
+            )
+            self.assertEqual(response.status_code, 200, identifier)
+            self.assertIn("access", response.json()["tokens"])
+
+    def test_login_rejects_bad_password(self):
+        response = self.client.post(
+            "/api/auth/login/", {"username": "ama", "password": "wrong"}, format="json"
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_student_registration_returns_tokens(self):
+        response = self.client.post(
+            "/api/auth/student/register/",
+            {
+                "user": {
+                    "username": "kofi",
+                    "email": "kofi@example.com",
+                    "first_name": "Kofi",
+                    "last_name": "Mensah",
+                    "password": "An0therStr0ng!",
+                },
+                "phone": "0201234567",
+                "country_of_citizenship": "Ghana",
+                "country_of_residence": "Ghana",
+                "education_level": "undergraduate",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertIn("tokens", response.json())
+        self.assertTrue(
+            User.objects.get(username="kofi").check_password("An0therStr0ng!")
+        )
+        student = Student.objects.get(user__username="kofi")
+        self.assertEqual(student.country_of_citizenship, "Ghana")
+        self.assertEqual(student.education_level, "undergraduate")
+
+    def test_admin_registration_is_not_public(self):
+        response = self.client.post(
+            "/api/auth/admin/register/",
+            {"user": {"username": "sneaky", "password": "An0therStr0ng!"}},
+            format="json",
+        )
+        self.assertIn(response.status_code, (401, 403))
+
+
+class AdminApiTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.super_admin = User.objects.create_user(
+            username="boss",
+            password="Str0ngPassw0rd!",
+            is_staff=True,
+            is_superuser=True,
+        )
+        Admin.objects.create(user=self.super_admin, is_super_admin=True)
+        self.client.force_authenticate(self.super_admin)
+        make_scholarship()
+        make_scholarship(name="Inactive", is_active=False)
+
+    def test_admin_listing_includes_inactive(self):
+        self.assertEqual(self.client.get("/api/admin/scholarships/").json()["count"], 2)
+
+    def test_statistics_shape(self):
+        body = self.client.get("/api/admin/statistics/").json()
+        self.assertEqual(body["total_scholarships"], 2)
+        self.assertEqual(body["active_scholarships"], 1)
+        self.assertEqual(body["total_admins"], 1)
+
+    def test_admin_roster_has_no_n_plus_one(self):
+        """Adding admins must not add queries - the old loop ran one per row."""
+        cache.clear()
+        with self.assertNumQueries(2):
+            self.client.get("/api/admins/")
+
+        for index in range(5):
+            staff = User.objects.create_user(
+                username=f"staff{index}", password="Str0ngPassw0rd!", is_staff=True
+            )
+            Admin.objects.create(user=staff)
+
+        cache.clear()
+        with self.assertNumQueries(2):
+            response = self.client.get("/api/admins/")
+        self.assertEqual(len(response.json()), 6)
+
+    def test_super_admin_cannot_delete_self(self):
+        response = self.client.delete(f"/api/admins/{self.super_admin.id}/")
+        self.assertEqual(response.status_code, 403)
+
+    def test_scholarship_export_streams_csv(self):
+        response = self.client.get("/api/admin/scholarships/export/")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.streaming)
+        body = b"".join(response.streaming_content).decode()
+        self.assertIn("Name,Host Country,Degree Level,Deadline,Link", body)
+        self.assertNotIn("Inactive", body)
+
+
+class ContactTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+
+    def test_contact_form_creates_message(self):
+        response = self.client.post(
+            "/api/contact/",
+            {
+                "name": "Ada",
+                "email": "ada@example.com",
+                "message": "I would like help with my application essay.",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(ContactMessage.objects.count(), 1)
+
+    def test_contact_form_rejects_short_message(self):
+        response = self.client.post(
+            "/api/contact/",
+            {"name": "Ada", "email": "ada@example.com", "message": "hi"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+
+class TransactionalEmailTests(TestCase):
+    """The React Email templates and the Resend/SMTP delivery service.
+
+    _deliver is exercised synchronously (the public helpers only wrap it in a
+    thread) with RESEND_API_KEY unset, so Django's locmem test backend
+    captures the message.
+    """
+
+    def _last_message(self):
+        from django.core import mail
+
+        self.assertEqual(len(mail.outbox), 1)
+        return mail.outbox[0]
+
+    def test_welcome_email_renders_html_and_text(self):
+        from . import emails
+
+        user = User.objects.create_user(
+            "ama", email="ama@example.com", password="x", first_name="Ama"
+        )
+        with self.settings(RESEND_API_KEY=""):
+            emails._deliver(
+                to=[user.email],
+                subject="Welcome to MyScholy",
+                template="welcome",
+                context={"first_name": user.first_name},
+            )
+        message = self._last_message()
+        self.assertEqual(message.to, ["ama@example.com"])
+        self.assertIn("Ama", message.body)  # plain text part
+        html, mimetype = message.alternatives[0]
+        self.assertEqual(mimetype, "text/html")
+        self.assertIn("Ama", html)
+        self.assertNotIn("{{", html)
+
+    def test_password_reset_email_contains_link_in_href(self):
+        from . import emails
+
+        link = "http://localhost:5173/reset-password?uid=Mg&token=abc-123"
+        with self.settings(RESEND_API_KEY=""):
+            emails._deliver(
+                to=["ama@example.com"],
+                subject="Reset your MyScholy password",
+                template="password-reset",
+                context={
+                    "first_name": "Ama",
+                    "reset_link": link,
+                    "expires_in": "1 hour",
+                },
+            )
+        message = self._last_message()
+        self.assertIn(link, message.body)
+        html = message.alternatives[0][0]
+        self.assertIn('href="http://localhost:5173/reset-password?uid=Mg&amp;token=abc-123"', html)
+
+    def test_contact_notification_escapes_html_and_sets_reply_to(self):
+        from . import emails
+
+        with self.settings(RESEND_API_KEY=""):
+            emails._deliver(
+                to=["team@example.com"],
+                subject="MyScholy contact form: Mallory",
+                template="contact-notification",
+                context={
+                    "name": "Mallory",
+                    "email": "mallory@example.com",
+                    "received_at": "04 Aug 2026 12:00 UTC",
+                    "message": "<script>alert(1)</script>\nsecond line",
+                },
+                reply_to=["mallory@example.com"],
+            )
+        message = self._last_message()
+        self.assertEqual(message.reply_to, ["mallory@example.com"])
+        html = message.alternatives[0][0]
+        self.assertNotIn("<script>alert(1)</script>", html)
+        self.assertIn("&lt;script&gt;", html)
+        self.assertIn("second line", html)
+
+
+class RegistrationValidationTests(TestCase):
+    """The API must reject bad input on its own - the React form's checks are
+    a convenience, and anything at all can POST here."""
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+
+    def register(self, **overrides):
+        payload = {
+            "user": {
+                "username": "ama@example.com",
+                "email": "ama@example.com",
+                "first_name": "Ama",
+                "last_name": "Boateng",
+                "password": "An0therStr0ng!",
+            },
+            "phone": "+233 20 123 4567",
+            "country_of_citizenship": "Ghana",
+            "country_of_residence": "Ghana",
+            "education_level": "graduate",
+        }
+        user_overrides = overrides.pop("user", None)
+        if user_overrides is not None:
+            payload["user"].update(user_overrides)
+        payload.update(overrides)
+        return self.client.post("/api/auth/student/register/", payload, format="json")
+
+    def assert_rejects(self, response, field, fragment):
+        self.assertEqual(response.status_code, 400, response.content)
+        body = response.json()
+        self.assertIn(field, body)
+        value = body[field]
+        message = " ".join(value if isinstance(value, list) else [str(value)])
+        self.assertIn(fragment, message.lower())
+
+    def test_valid_payload_is_accepted(self):
+        self.assertEqual(self.register().status_code, 201)
+
+    def test_password_is_stored_hashed(self):
+        """Guards UserSerializer.create(): ModelSerializer's default create()
+        writes the raw string straight into the password column."""
+        self.assertEqual(self.register().status_code, 201)
+        user = User.objects.get(email="ama@example.com")
+        self.assertNotEqual(user.password, "An0therStr0ng!")
+        # "<algorithm>$<iterations>$<salt>$<hash>" - the algorithm varies
+        # (these tests use MD5 for speed), an unhashed value has no $ at all.
+        self.assertIn("$", user.password)
+        self.assertTrue(user.check_password("An0therStr0ng!"))
+
+    def test_citizenship_is_required(self):
+        self.assert_rejects(
+            self.register(country_of_citizenship=""),
+            "country_of_citizenship",
+            "citizenship",
+        )
+
+    def test_residence_is_required(self):
+        self.assert_rejects(
+            self.register(country_of_residence=""),
+            "country_of_residence",
+            "residence",
+        )
+
+    def test_education_level_is_required(self):
+        self.assert_rejects(
+            self.register(education_level=""), "education_level", "education level"
+        )
+
+    def test_education_level_rejects_unknown_value(self):
+        self.assert_rejects(
+            self.register(education_level="phd"), "education_level", "high school"
+        )
+
+    def test_education_level_accepts_each_choice(self):
+        for index, level in enumerate(["high_school", "undergraduate", "graduate"]):
+            email = "student{}@example.com".format(index)
+            response = self.register(
+                user={"username": email, "email": email}, education_level=level
+            )
+            self.assertEqual(response.status_code, 201, response.content)
+            self.assertEqual(
+                Student.objects.get(user__email=email).education_level, level
+            )
+
+    def test_malformed_phone_is_rejected(self):
+        self.assert_rejects(self.register(phone="not-a-number"), "phone", "+231")
+
+    def test_blank_phone_is_allowed(self):
+        self.assertEqual(self.register(phone="").status_code, 201)
+
+    def test_invalid_email_is_rejected(self):
+        response = self.register(user={"email": "ama@@example"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("email", response.json()["user"])
+
+    def test_duplicate_email_is_rejected_with_guidance(self):
+        self.assertEqual(self.register().status_code, 201)
+        response = self.register()
+        self.assertEqual(response.status_code, 400)
+        message = " ".join(response.json()["user"]["email"])
+        self.assertIn("already exists", message)
+
+    def test_short_password_is_rejected(self):
+        response = self.register(user={"password": "short1"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("8 characters", " ".join(response.json()["user"]["password"]))
+
+    def test_all_numeric_password_is_rejected(self):
+        response = self.register(user={"password": "9184756231"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("password", response.json()["user"])
+
+    def test_name_with_digits_is_rejected(self):
+        response = self.register(user={"first_name": "Ama123"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("first_name", response.json()["user"])
+
+    def test_missing_names_are_rejected(self):
+        response = self.register(user={"first_name": "", "last_name": ""})
+        self.assertEqual(response.status_code, 400)
+        body = response.json()["user"]
+        self.assertIn("first_name", body)
+        self.assertIn("last_name", body)
+
+
+class ContactValidationTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+
+    def post(self, **overrides):
+        payload = {
+            "name": "Ada",
+            "email": "ada@example.com",
+            "message": "I would like help with my application essay.",
+        }
+        payload.update(overrides)
+        return self.client.post("/api/contact/", payload, format="json")
+
+    def test_invalid_email_is_rejected(self):
+        response = self.post(email="ada@@example")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("email", response.json())
+
+    def test_name_with_digits_is_rejected(self):
+        response = self.post(name="Ada99")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("name", response.json())
+
+    def test_overlong_message_is_rejected(self):
+        response = self.post(message="x" * 5001)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("5000", " ".join(response.json()["message"]))
+
+    def test_email_is_normalised_to_lowercase(self):
+        self.assertEqual(self.post(email="Ada@Example.COM").status_code, 201)
+        self.assertEqual(ContactMessage.objects.get().email, "ada@example.com")
+
+
+class ScholarshipValidationTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.admin_user = User.objects.create_user(
+            username="editor", password="Str0ngPassw0rd!", is_staff=True
+        )
+        Admin.objects.create(user=self.admin_user, is_super_admin=True)
+        self.client.force_authenticate(self.admin_user)
+
+    def post(self, **overrides):
+        payload = {
+            "name": "Chevening Scholarship",
+            "description": "Fully funded postgraduate study in the United Kingdom.",
+            "deadline": (timezone.now().date() + timedelta(days=30)).isoformat(),
+            "host_country": "United Kingdom",
+            "benefits": "Tuition\nStipend",
+            "eligibility": "An undergraduate degree",
+            "degree_level": "Masters",
+            "link": "https://example.com/apply",
+            "author": "MyScholy",
+        }
+        payload.update(overrides)
+        return self.client.post("/api/scholarships/", payload, format="json")
+
+    def test_valid_payload_is_accepted(self):
+        response = self.post()
+        self.assertEqual(response.status_code, 201, response.content)
+
+    def test_link_must_be_a_full_url(self):
+        response = self.post(link="example.com/apply")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("link", response.json())
+
+    def test_past_deadline_is_rejected_on_create(self):
+        response = self.post(
+            deadline=(timezone.now().date() - timedelta(days=1)).isoformat()
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("already passed", " ".join(response.json()["deadline"]))
+
+    def test_thin_description_is_rejected(self):
+        response = self.post(description="Short.")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("description", response.json())

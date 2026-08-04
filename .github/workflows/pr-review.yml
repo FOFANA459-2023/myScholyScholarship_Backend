@@ -1,0 +1,98 @@
+# Automated review on every pull request.
+#
+#  - dependency-review blocks PRs that introduce known-vulnerable packages
+#    (active immediately, no configuration needed on public repos).
+#  - Claude reviews the diff for security, auth logic, SQL injection and edge
+#    cases. It activates automatically once the ANTHROPIC_API_KEY secret is
+#    added; until then the step skips with a notice instead of failing.
+
+name: PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    name: Dependency review
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure
+
+  claude-review:
+    name: Claude code review
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: ${{ !github.event.pull_request.draft }}
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+    env:
+      # Job-level `if` cannot read secrets; this env bridge lets the steps
+      # below skip cleanly while the key is not configured yet.
+      HAS_ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+    steps:
+      - name: Skip notice
+        if: env.HAS_ANTHROPIC_KEY != 'true'
+        run: echo "::notice::ANTHROPIC_API_KEY not configured - Claude review skipped. Add the secret to enable automated reviews."
+      - uses: actions/checkout@v4
+        if: env.HAS_ANTHROPIC_KEY == 'true'
+        with:
+          fetch-depth: 2
+      - uses: anthropics/claude-code-action@v1
+        if: env.HAS_ANTHROPIC_KEY == 'true'
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Review this pull request (REPO: ${{ github.repository }}, PR: ${{ github.event.pull_request.number }}).
+
+            Project context: Django REST backend for MyScholy, a scholarship
+            board. JWT auth via SimpleJWT with refresh rotation + blacklist.
+            Roles: anonymous / student / admin / super admin, enforced by
+            permission classes in scholarships/permissions.py. The public
+            scholarship board is intentionally open; everything under /admin/
+            and /admins/ must stay locked.
+
+            Review the diff with these priorities, in order:
+
+            1. SECURITY: SQL injection vectors (raw()/extra()/cursor with string
+               interpolation, unsafe ORM usage), template injection, secrets
+               committed or logged (API keys, reset tokens), CSRF/CORS
+               regressions, insecure deserialization, path traversal.
+            2. AUTH & BUSINESS LOGIC: endpoints missing or loosening permission
+               classes; privilege escalation (a regular admin gaining
+               super-admin powers); token mistakes (refresh not blacklisted,
+               tokens in logs); throttle removal on public endpoints;
+               eligibility/deadline logic errors.
+            3. UNHANDLED EDGE CASES: null/empty/malformed input, race
+               conditions, missing transaction boundaries, off-by-one on
+               pagination and deadlines, timezone bugs, exception paths that
+               leak stack traces or internal details.
+            4. PERFORMANCE: N+1 queries, missing select_related/
+               prefetch_related, unbounded querysets, cache invalidation gaps,
+               blocking work on the request thread.
+            5. CORRECTNESS vs. tests: does the change break documented
+               behaviour; are new code paths covered by the Django test suite?
+
+            Rules:
+            - Use inline comments for file-specific findings.
+            - Only flag real issues you are confident about - do not pad the review.
+            - If the PR is clean, say so briefly.
+            - End with a one-paragraph summary: overall risk (low/medium/high)
+              and anything that must be fixed before merge.
+          claude_args: |
+            --allowed-tools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"

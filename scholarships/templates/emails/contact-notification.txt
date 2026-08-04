@@ -1,0 +1,11 @@
+{% autoescape off %}New contact form message
+
+From: {{ name }} <{{ email }}>
+Received: {{ received_at }}
+
+{{ message }}
+
+--
+Reply directly to this email to answer the sender - the reply-to address is
+set to theirs.
+{% endautoescape %}

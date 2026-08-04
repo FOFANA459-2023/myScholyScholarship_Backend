@@ -1,0 +1,17 @@
+{% autoescape off %}Welcome to MyScholy, {{ first_name }}!
+
+Your account is ready. MyScholy brings together scholarships from around the
+world so you can find the ones that fit you - by country, degree level and
+deadline - and never miss a closing date.
+
+Browse scholarships: {{ frontend_url }}/scholarships
+
+A quick tip: filter by your target country and degree level first, then sort
+by deadline so the most urgent opportunities are always at the top.
+
+You are receiving this email because this address was used to create a
+MyScholy account. If that wasn't you, you can safely ignore this email.
+
+(c) {{ year }} MyScholy - Scholarships for students worldwide.
+{{ frontend_url }}
+{% endautoescape %}

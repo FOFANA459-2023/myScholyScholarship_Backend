@@ -1,0 +1,4 @@
+# Development / CI tooling only - production installs requirements.txt
+ruff==0.16.1
+pip-audit
+coverage

@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex" />
+    <title>MyScholy API</title>
+    <style>
+      :root {
+        --navy: #0c4a6e;
+        --navy-deep: #082f49;
+        --gold: #ca8a04;
+        --sky: #0ea5e9;
+        --ink: #0f172a;
+        --muted: #64748b;
+        --line: #e2e8f0;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 2.5rem 1.5rem;
+        font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+        background: linear-gradient(160deg, var(--navy-deep) 0%, var(--navy) 45%, var(--gold) 100%);
+        color: var(--ink);
+        min-height: 100vh;
+      }
+      .shell {
+        max-width: 60rem;
+        margin: 0 auto;
+        background: #fff;
+        border-radius: 1rem;
+        overflow: hidden;
+        box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.35);
+      }
+      header {
+        padding: 2.5rem 2rem;
+        background: linear-gradient(120deg, var(--navy) 0%, var(--sky) 100%);
+        color: #fff;
+      }
+      header h1 { margin: 0; font-size: 1.9rem; font-weight: 600; letter-spacing: -0.02em; }
+      header p { margin: 0.5rem 0 0; opacity: 0.85; }
+      .status {
+        display: inline-block;
+        margin-top: 1.25rem;
+        padding: 0.35rem 0.85rem;
+        border-radius: 999px;
+        background: rgb(255 255 255 / 0.18);
+        border: 1px solid rgb(255 255 255 / 0.35);
+        font-size: 0.8rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      main { padding: 2rem; display: grid; gap: 1.5rem; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); }
+      section { border: 1px solid var(--line); border-radius: 0.75rem; padding: 1.25rem; }
+      section h2 { margin: 0 0 0.9rem; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
+      ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.4rem; }
+      code { font-family: ui-monospace, "Cascadia Code", monospace; font-size: 0.82rem; color: var(--navy); }
+      a { color: var(--navy); text-decoration: none; }
+      a:hover { color: var(--gold); }
+      footer { padding: 1.25rem 2rem; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.85rem; }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <header>
+        <h1>MyScholy API</h1>
+        <p>{{ info.description }}</p>
+        <span class="status">&bull; {{ info.status }}</span>
+      </header>
+      <main>
+        {% for group, routes in info.endpoints.items %}
+          <section>
+            <h2>{{ group }}</h2>
+            <ul>
+              {% for label, path in routes.items %}
+                <li><a href="{{ path }}"><code>{{ path }}</code></a></li>
+              {% endfor %}
+            </ul>
+          </section>
+        {% endfor %}
+      </main>
+      <footer>Version {{ info.version }} &middot; Django REST Framework</footer>
+    </div>
+  </body>
+</html>

@@ -1,7 +1,9 @@
-from django.core.management.base import BaseCommand
-from django.db import transaction, IntegrityError, connections
 from django.contrib.auth.models import User
-from scholarships.models import Scholarship, Student, Admin
+from django.core.management.base import BaseCommand
+from django.db import IntegrityError, connections, transaction
+
+from scholarships.models import Admin, Scholarship, Student
+
 
 class Command(BaseCommand):
     help = "Migrate users and app data from the 'sqlite' DB alias into the default DB using the ORM."

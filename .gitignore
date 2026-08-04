@@ -65,3 +65,6 @@ Thumbs.db
 *.crt
 credentials.json
 secrets.json
+
+# E2E local database
+*.sqlite3

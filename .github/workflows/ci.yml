@@ -1,0 +1,100 @@
+# MyScholy backend CI/CD (Django REST, deployed to Render).
+#
+# Every push and PR: lint (ruff) -> Django tests with coverage -> dependency
+# audit. The deploy hook fires ONLY on push to main after every gate passes -
+# keep Render's own "Auto-Deploy on commit" turned OFF so this pipeline is the
+# single deploy trigger.
+#
+# Required repository configuration is documented in .github/DEPLOYMENT.md.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.13"
+
+jobs:
+  lint:
+    name: Backend / lint (ruff)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check .
+
+  test:
+    name: Backend / unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: Django system checks
+        run: python manage.py check --settings=scholarship_backend.settings_test
+      - name: Run tests with coverage
+        run: |
+          coverage run manage.py test --settings=scholarship_backend.settings_test
+          coverage report --skip-empty
+          coverage xml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.xml
+          retention-days: 7
+
+  audit:
+    name: Security / dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: pip-audit (production requirements)
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt
+
+  deploy:
+    name: Deploy / Render
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [lint, test, audit]
+    environment:
+      name: production
+      url: https://myscholyscholarship-backend.onrender.com
+    steps:
+      - name: Trigger Render deploy hook
+        run: |
+          if [ -z "$DEPLOY_HOOK" ]; then
+            echo "RENDER_DEPLOY_HOOK_URL secret is not set" >&2
+            exit 1
+          fi
+          curl -fsS -X POST "$DEPLOY_HOOK" -o /dev/null
+          echo "Render deploy triggered."
+        env:
+          DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}

@@ -1,58 +1,366 @@
-from rest_framework import generics, status
-from django.http import HttpResponse
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated, AllowAny
+"""API views.
+
+Performance notes that apply throughout this module:
+
+* Read endpoints are cached in a version-scoped namespace (see ``cache.py``).
+  Any write bumps the version via model signals, so responses are never stale.
+* Cached read endpoints also emit an ``ETag`` and ``Cache-Control``, letting
+  Django's ConditionalGetMiddleware answer repeat requests with a 304 and no
+  body at all.
+* Aggregates run as a single query rather than one query per number.
+* CSV exports stream instead of buffering the whole file in memory.
+"""
+
+import csv
+import logging
+from datetime import timedelta
+
+from django.conf import settings
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
+from django.contrib.auth.password_validation import validate_password
+from django.contrib.auth.tokens import default_token_generator
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
+from django.db.models import Count, Q
+from django.http import StreamingHttpResponse
+from django.shortcuts import render
+from django.utils import timezone
+from django.utils.encoding import force_bytes, force_str
+from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
+from rest_framework import generics, status
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.throttling import AnonRateThrottle
+from rest_framework_simplejwt.token_blacklist.models import (
+    BlacklistedToken,
+    OutstandingToken,
+)
 from rest_framework_simplejwt.tokens import RefreshToken
-from .models import Scholarship, Student, Admin
-from .permissions import IsAdmin, IsSuperAdmin, IsAdminOrReadOnly
+
+from . import emails
+from .cache import (
+    NS_SCHOLARSHIPS,
+    NS_USERS,
+    TTL_DETAIL,
+    TTL_FACETS,
+    TTL_LIST,
+    TTL_ROSTER,
+    TTL_STATISTICS,
+    cached,
+    etag_for,
+    make_key,
+)
+from .filters import apply_filters, normalize_params, split_terms
+from .models import Admin, ContactMessage, Scholarship, Student
+from .pagination import ScholarshipPagination
+from .permissions import IsAdmin, IsAdminOrReadOnly, role_for
 from .serializers import (
+    AdminSerializer,
+    ContactMessageSerializer,
+    LoginSerializer,
+    PasswordResetConfirmSerializer,
+    PasswordResetRequestSerializer,
+    ScholarshipListSerializer,
     ScholarshipSerializer,
     StudentSerializer,
-    AdminSerializer,
     UserSerializer,
-    LoginSerializer,
 )
-from django.db import transaction
-from datetime import datetime, timedelta
-from django.utils import timezone
-from django.db.models import Count
+
+PUBLIC_CACHE_CONTROL = f"public, max-age=60, stale-while-revalidate={TTL_LIST}"
+PRIVATE_CACHE_CONTROL = "private, max-age=0, must-revalidate"
+# The filter dropdowns must never offer a value that is no longer in the data,
+# so facets are always revalidated. The ETag is version-scoped, so an unchanged
+# catalogue still answers with an empty 304.
+REVALIDATE_CACHE_CONTROL = "public, max-age=0, must-revalidate"
 
 
-# Scholarship Views
+def _apply_cache_headers(response, etag, cache_control=PUBLIC_CACHE_CONTROL):
+    response["ETag"] = etag
+    response["Cache-Control"] = cache_control
+    response["Vary"] = "Accept, Authorization"
+    return response
+
+
+# ---------------------------------------------------------------------------
+# Scholarships (public)
+# ---------------------------------------------------------------------------
+
+
 class ScholarshipListCreateView(generics.ListCreateAPIView):
-    queryset = Scholarship.objects.filter(is_active=True)
+    """GET: paginated, filtered, cached board. POST: admin-only create."""
+
     serializer_class = ScholarshipSerializer
     permission_classes = [IsAdminOrReadOnly]
+    pagination_class = ScholarshipPagination
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context["today"] = timezone.now().date()
+        return context
+
+    def get_queryset(self):
+        params = normalize_params(self.request.query_params)
+        allow_inactive = role_for(self.request.user)["is_admin"]
+        return apply_filters(
+            Scholarship.objects.list_fields(), params, allow_inactive=allow_inactive
+        )
+
+    def list(self, request, *args, **kwargs):
+        params = normalize_params(request.query_params)
+        is_admin = role_for(request.user)["is_admin"]
+        # Admins may see inactive rows, so their view is cached separately.
+        scope = {"admin": is_admin, **params}
+
+        etag = etag_for(NS_SCHOLARSHIPS, **scope)
+        key = make_key(NS_SCHOLARSHIPS, "list", **scope)
+
+        def build():
+            queryset = apply_filters(
+                Scholarship.objects.list_fields(), params, allow_inactive=is_admin
+            )
+            page = self.paginate_queryset(queryset)
+            serializer = ScholarshipListSerializer(
+                page, many=True, context=self.get_serializer_context()
+            )
+            return self.get_paginated_response(serializer.data).data
+
+        payload = cached(key, TTL_LIST, build)
+        cache_control = PRIVATE_CACHE_CONTROL if is_admin else PUBLIC_CACHE_CONTROL
+        return _apply_cache_headers(Response(payload), etag, cache_control)
+
+    def perform_create(self, serializer):
+        serializer.save()
 
 
 class ScholarshipDetailView(generics.RetrieveUpdateDestroyAPIView):
-    queryset = Scholarship.objects.all()
+    """GET is cached and public; write methods require an admin."""
+
     serializer_class = ScholarshipSerializer
     permission_classes = [IsAdminOrReadOnly]
 
+    def get_queryset(self):
+        # A scholarship an admin has hidden should not be readable by its id
+        # either, so anonymous callers get a 404 rather than the record.
+        if role_for(self.request.user)["is_admin"]:
+            return Scholarship.objects.all()
+        return Scholarship.objects.active()
 
-# Authentication Views
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context["today"] = timezone.now().date()
+        return context
+
+    def retrieve(self, request, *args, **kwargs):
+        pk = kwargs["pk"]
+        is_admin = role_for(request.user)["is_admin"]
+        etag = etag_for(NS_SCHOLARSHIPS, detail=pk, admin=is_admin)
+        key = make_key(NS_SCHOLARSHIPS, "detail", pk=pk, admin=is_admin)
+
+        payload = cached(
+            key,
+            TTL_DETAIL,
+            lambda: ScholarshipSerializer(
+                self.get_object(), context=self.get_serializer_context()
+            ).data,
+        )
+        cache_control = PRIVATE_CACHE_CONTROL if is_admin else PUBLIC_CACHE_CONTROL
+        return _apply_cache_headers(Response(payload), etag, cache_control)
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def scholarship_facets(request):
+    """Distinct countries and degree levels with counts, for the filter UI.
+
+    Previously the client derived these by downloading every scholarship. This
+    is two grouped queries, cached for 15 minutes.
+    """
+    etag = etag_for(NS_SCHOLARSHIPS, facets=True)
+    key = make_key(NS_SCHOLARSHIPS, "facets")
+
+    def build():
+        active = Scholarship.objects.active()
+
+        def tally(field):
+            """Count scholarships per individual term stored in ``field``.
+
+            A row reading "Graduate, Postgraduate" counts towards both, so the
+            dropdown offers each level once instead of listing every stored
+            combination as its own option.
+            """
+            counts = {}
+            labels = {}
+            rows = active.values(field).annotate(count=Count("id"))
+            for row in rows:
+                for term in split_terms(row[field]):
+                    key = term.casefold()
+                    counts[key] = counts.get(key, 0) + row["count"]
+                    labels.setdefault(key, term)
+            return [
+                {"value": labels[key], "count": counts[key]}
+                for key in sorted(counts, key=lambda k: labels[k].lower())
+            ]
+
+        return {
+            "countries": tally("host_country"),
+            "degree_levels": tally("degree_level"),
+        }
+
+    return _apply_cache_headers(
+        Response(cached(key, TTL_FACETS, build)), etag, REVALIDATE_CACHE_CONTROL
+    )
+
+
+# ---------------------------------------------------------------------------
+# Authentication
+# ---------------------------------------------------------------------------
+
+
+def get_tokens_for_user(user):
+    refresh = RefreshToken.for_user(user)
+    return {"refresh": str(refresh), "access": str(refresh.access_token)}
+
+
+def _serialize_login_user(user):
+    """Build the user payload returned by login, using the cached role lookup
+    instead of the try/except chain of queries this used to run."""
+    role = role_for(user)
+    user_type = "admin" if role["is_admin"] else "student"
+
+    if role["is_admin"]:
+        profile_row = Admin.objects.filter(user=user).values("id", "is_super_admin").first()
+        profile = {
+            "id": profile_row["id"] if profile_row else None,
+            "is_super_admin": role["is_super_admin"],
+        }
+    else:
+        profile = (
+            Student.objects.filter(user=user)
+            .values(
+                "id",
+                "phone",
+                "country_of_citizenship",
+                "country_of_residence",
+                "education_level",
+            )
+            .first()
+        )
+
+    return {
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "user_type": user_type,
+        "profile": profile,
+        "is_staff": user.is_staff,
+        "is_superuser": user.is_superuser,
+    }
+
+
+class LoginThrottle(AnonRateThrottle):
+    scope = "login"
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+@throttle_classes([LoginThrottle])
+def user_login(request):
+    serializer = LoginSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    identifier = serializer.validated_data["username"].strip()
+    password = serializer.validated_data["password"]
+
+    # Resolve the account first (case-insensitively, by username or email) so
+    # a failed sign-in can say what actually went wrong instead of a blanket
+    # "invalid credentials".
+    account = User.objects.filter(username__iexact=identifier).first()
+    if not account and "@" in identifier:
+        account = User.objects.filter(email__iexact=identifier).first()
+
+    if not account:
+        return Response(
+            {
+                "error": (
+                    "We couldn't find an account with that email or username. "
+                    "Double-check the spelling, or create a new account."
+                )
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    if not account.is_active:
+        return Response(
+            {
+                "error": (
+                    "This account has been deactivated. "
+                    "Contact us if you think this is a mistake."
+                )
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    user = authenticate(username=account.username, password=password)
+    if not user:
+        return Response(
+            {
+                "error": (
+                    "That password isn't right. Try again, or use "
+                    "“Forgot password?” to reset it."
+                )
+            },
+            status=status.HTTP_401_UNAUTHORIZED,
+        )
+
+    return Response(
+        {
+            "message": "Login successful",
+            "tokens": get_tokens_for_user(user),
+            "user": _serialize_login_user(user),
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def student_register(request):
     serializer = StudentSerializer(data=request.data)
     if serializer.is_valid():
         student = serializer.save()
+        emails.send_welcome_email(student.user)
         return Response(
-            {"message": "Student registered successfully", "student_id": student.id},
+            {
+                "message": "Student registered successfully",
+                "student_id": student.id,
+                "tokens": get_tokens_for_user(student.user),
+                "user": _serialize_login_user(student.user),
+            },
             status=status.HTTP_201_CREATED,
         )
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 @api_view(["POST"])
-@permission_classes([AllowAny])
+@permission_classes([IsAdmin])
 def admin_register(request):
+    """Create an admin account. Restricted to existing admins - this endpoint
+    used to be open to anonymous callers, which allowed anyone to grant
+    themselves administrator access."""
     serializer = AdminSerializer(data=request.data)
     if serializer.is_valid():
+        if serializer.validated_data.get("is_super_admin") and not role_for(
+            request.user
+        )["is_super_admin"]:
+            return Response(
+                {"error": "Only super admins can create super admins"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         admin = serializer.save()
         return Response(
             {"message": "Admin registered successfully", "admin_id": admin.id},
@@ -61,737 +369,639 @@ def admin_register(request):
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-# Helper function to get tokens for user
-def get_tokens_for_user(user):
-    refresh = RefreshToken.for_user(user)
-    return {
-        "refresh": str(refresh),
-        "access": str(refresh.access_token),
-    }
-
-
-@api_view(["POST"])
-@permission_classes([AllowAny])
-def user_login(request):
-    serializer = LoginSerializer(data=request.data)
-    if serializer.is_valid():
-        username = serializer.validated_data["username"]
-        password = serializer.validated_data["password"]
-
-        # Try to authenticate with username first, then with email
-        user = authenticate(username=username, password=password)
-        if not user:
-            # Try to find user by email and authenticate
-            try:
-                user_obj = User.objects.get(email=username)
-                user = authenticate(username=user_obj.username, password=password)
-            except User.DoesNotExist:
-                pass
-
-        if user:
-            # Generate JWT tokens
-            tokens = get_tokens_for_user(user)
-
-            # Check if user is admin or student
-            user_type = "student"
-            user_profile = None
-            is_staff_or_admin = user.is_staff or user.is_superuser
-
-            try:
-                admin_profile = Admin.objects.get(user=user)
-                user_type = "admin"
-                user_profile = {
-                    "id": admin_profile.id,
-                    "is_super_admin": admin_profile.is_super_admin,
-                }
-            except Admin.DoesNotExist:
-                # Check if user is Django staff/admin even without Admin profile
-                if is_staff_or_admin:
-                    user_type = "admin"
-                    user_profile = {"id": None, "is_super_admin": user.is_superuser}
-                else:
-                    try:
-                        student_profile = Student.objects.get(user=user)
-                        user_profile = {
-                            "id": student_profile.id,
-                            "phone": student_profile.phone,
-                            "country": student_profile.country,
-                        }
-                    except Student.DoesNotExist:
-                        pass
-
-            return Response(
-                {
-                    "message": "Login successful",
-                    "tokens": tokens,
-                    "user": {
-                        "id": user.id,
-                        "username": user.username,
-                        "email": user.email,
-                        "first_name": user.first_name,
-                        "last_name": user.last_name,
-                        "user_type": user_type,
-                        "profile": user_profile,
-                        "is_staff": user.is_staff,
-                        "is_superuser": user.is_superuser,
-                    },
-                },
-                status=status.HTTP_200_OK,
-            )
-        else:
-            return Response(
-                {"error": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED
-            )
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def user_logout(request):
+    refresh_token = request.data.get("refresh")
+    if not refresh_token:
+        return Response(
+            {"error": "A refresh token is required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
     try:
-        refresh_token = request.data["refresh"]
-        token = RefreshToken(refresh_token)
-        token.blacklist()
-        return Response({"message": "Logout successful"}, status=status.HTTP_200_OK)
-    except Exception as e:
+        RefreshToken(refresh_token).blacklist()
+    except Exception:
         return Response({"error": "Invalid token"}, status=status.HTTP_400_BAD_REQUEST)
+    return Response({"message": "Logout successful"}, status=status.HTTP_200_OK)
 
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def user_profile(request):
-    user = request.user
-    user_data = UserSerializer(user).data
+    return Response(_serialize_login_user(request.user), status=status.HTTP_200_OK)
 
-    # Get user profile based on type
+
+logger = logging.getLogger(__name__)
+
+
+class PasswordResetThrottle(AnonRateThrottle):
+    scope = "password_reset"
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+@throttle_classes([PasswordResetThrottle])
+def password_reset_request(request):
+    """Email a signed, single-use reset link."""
+    serializer = PasswordResetRequestSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    email = serializer.validated_data["email"].strip()
+    user = User.objects.filter(email__iexact=email, is_active=True).first()
+
+    if not user:
+        return Response(
+            {
+                "error": (
+                    "We couldn't find an account with that email. "
+                    "Check for typos, or create a new account instead."
+                )
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    uid = urlsafe_base64_encode(force_bytes(user.pk))
+    token = default_token_generator.make_token(user)
+    link = f"{settings.FRONTEND_URL}/reset-password?uid={uid}&token={token}"
+    # Fire and forget: the user should not be staring at a spinner while the
+    # email provider round trip completes.
+    emails.send_password_reset_email(user, link)
+
+    return Response(
+        {
+            "message": (
+                f"We've emailed a reset link to {user.email}. "
+                "Check your inbox - and your spam folder, just in case. "
+                "The link expires in 1 hour."
+            )
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+@throttle_classes([PasswordResetThrottle])
+def password_reset_confirm(request):
+    serializer = PasswordResetConfirmSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
     try:
-        admin_profile = Admin.objects.get(user=user)
-        user_data["user_type"] = "admin"
-        user_data["profile"] = AdminSerializer(admin_profile).data
-    except Admin.DoesNotExist:
-        try:
-            student_profile = Student.objects.get(user=user)
-            user_data["user_type"] = "student"
-            user_data["profile"] = StudentSerializer(student_profile).data
-        except Student.DoesNotExist:
-            user_data["user_type"] = "user"
-            user_data["profile"] = None
+        user_id = force_str(urlsafe_base64_decode(serializer.validated_data["uid"]))
+        user = User.objects.get(pk=user_id, is_active=True)
+    except (User.DoesNotExist, ValueError, TypeError, OverflowError):
+        user = None
 
-    return Response(user_data, status=status.HTTP_200_OK)
+    token = serializer.validated_data["token"]
+    if not user or not default_token_generator.check_token(user, token):
+        return Response(
+            {"error": "This reset link is invalid or has expired. Please request a new one."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    new_password = serializer.validated_data["new_password"]
+    try:
+        # Validated here rather than in the serializer so the similarity
+        # validator can compare against the user's name and email.
+        validate_password(new_password, user=user)
+    except DjangoValidationError as exc:
+        return Response(
+            {"new_password": exc.messages}, status=status.HTTP_400_BAD_REQUEST
+        )
+
+    user.set_password(new_password)
+    user.save(update_fields=["password"])
+    # Changing the password invalidates the token (it hashes the old password),
+    # and blacklisting outstanding refresh tokens signs out existing sessions.
+    for outstanding in OutstandingToken.objects.filter(user=user):
+        BlacklistedToken.objects.get_or_create(token=outstanding)
+
+    return Response(
+        {"message": "Password reset successful. You can now sign in."},
+        status=status.HTTP_200_OK,
+    )
 
 
-# Admin Views
+# ---------------------------------------------------------------------------
+# Admin: scholarships
+# ---------------------------------------------------------------------------
+
+
 @api_view(["GET", "POST"])
 @permission_classes([IsAdmin])
 def admin_scholarships(request):
+    """Admin listing (includes inactive rows) and create."""
     if request.method == "GET":
-        scholarships = Scholarship.objects.all()
-        serializer = ScholarshipSerializer(scholarships, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        params = normalize_params(request.query_params)
+        params["include_inactive"] = True
+        queryset = apply_filters(
+            Scholarship.objects.list_fields(), params, allow_inactive=True
+        )
+        paginator = ScholarshipPagination()
+        page = paginator.paginate_queryset(queryset, request)
+        serializer = ScholarshipListSerializer(
+            page, many=True, context={"today": timezone.now().date()}
+        )
+        return paginator.get_paginated_response(serializer.data)
 
-    elif request.method == "POST":
-        serializer = ScholarshipSerializer(data=request.data)
-        if serializer.is_valid():
-            scholarship = serializer.save()
-            return Response(
-                ScholarshipSerializer(scholarship).data, status=status.HTTP_201_CREATED
-            )
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    serializer = ScholarshipSerializer(
+        data=request.data, context={"today": timezone.now().date()}
+    )
+    if serializer.is_valid():
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-@api_view(["GET", "PUT", "DELETE"])
+@api_view(["GET", "PUT", "PATCH", "DELETE"])
 @permission_classes([IsAdmin])
 def admin_scholarship_detail(request, pk):
-    try:
-        scholarship = Scholarship.objects.get(pk=pk)
-    except Scholarship.DoesNotExist:
+    scholarship = Scholarship.objects.filter(pk=pk).first()
+    if scholarship is None:
         return Response(
             {"error": "Scholarship not found"}, status=status.HTTP_404_NOT_FOUND
         )
 
+    context = {"today": timezone.now().date()}
+
     if request.method == "GET":
-        serializer = ScholarshipSerializer(scholarship)
-        return Response(serializer.data, status=status.HTTP_200_OK)
-
-    elif request.method == "PUT":
-        serializer = ScholarshipSerializer(scholarship, data=request.data)
-        if serializer.is_valid():
-            updated_scholarship = serializer.save()
-            return Response(
-                ScholarshipSerializer(updated_scholarship).data,
-                status=status.HTTP_200_OK,
-            )
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-    elif request.method == "DELETE":
-        scholarship.delete()
         return Response(
-            {"message": "Scholarship deleted successfully"},
-            status=status.HTTP_204_NO_CONTENT,
+            ScholarshipSerializer(scholarship, context=context).data,
+            status=status.HTTP_200_OK,
         )
 
+    if request.method in ("PUT", "PATCH"):
+        serializer = ScholarshipSerializer(
+            scholarship,
+            data=request.data,
+            partial=request.method == "PATCH",
+            context=context,
+        )
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-# Admin User Management Endpoints
+    scholarship.delete()
+    return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ---------------------------------------------------------------------------
+# Admin: user management
+# ---------------------------------------------------------------------------
+
+
 @api_view(["GET", "POST"])
 @permission_classes([IsAdmin])
 def admin_users(request):
     if request.method == "GET":
-        # List all admin users (custom Admin model + Django staff/superusers)
-        admin_profiles = Admin.objects.select_related("user").all()
-        admin_list = []
-        for admin in admin_profiles:
-            admin_list.append(
-                {
-                    "admin_id": admin.id,  # ID from Admin profile
-                    "user_id": admin.user.id,  # Django auth User ID
-                    "username": admin.user.username,
-                    "email": admin.user.email,
-                    "first_name": admin.user.first_name,
-                    "last_name": admin.user.last_name,
-                    "is_super_admin": admin.is_super_admin,
-                    "is_staff": admin.user.is_staff,
-                    "is_superuser": admin.user.is_superuser,
-                }
+        # The management page polls this; never let a browser or proxy hold a
+        # copy - freshness is handled by the server-side versioned cache.
+        response = Response(_list_admin_users(), status=status.HTTP_200_OK)
+        response["Cache-Control"] = "private, no-store"
+        return response
+    return _create_admin_user(request)
+
+
+def _list_admin_users():
+    """Every admin-ish account in one query.
+
+    The previous implementation looped over staff users and ran an
+    ``Admin.objects.filter(...).exists()`` per row.
+    """
+    key = make_key(NS_USERS, "admin-roster")
+
+    def build():
+        rows = (
+            # Anything the database considers an admin: an Admin profile row,
+            # Django staff, or a superuser flag set directly on the account.
+            User.objects.filter(
+                Q(admin__isnull=False) | Q(is_staff=True) | Q(is_superuser=True)
             )
-        # Add Django staff/superusers not in Admin model
-        staff_users = User.objects.filter(is_staff=True)
-        for user in staff_users:
-            if not Admin.objects.filter(user=user).exists():
-                admin_list.append(
-                    {
-                        "admin_id": None,
-                        "user_id": user.id,
-                        "username": user.username,
-                        "email": user.email,
-                        "first_name": user.first_name,
-                        "last_name": user.last_name,
-                        "is_super_admin": user.is_superuser,
-                        "is_staff": user.is_staff,
-                        "is_superuser": user.is_superuser,
-                    }
-                )
-        return Response(admin_list, status=status.HTTP_200_OK)
+            .distinct()
+            .select_related("admin")
+            .order_by("username")
+        )
+        return [
+            {
+                "admin_id": getattr(getattr(user, "admin", None), "id", None),
+                "user_id": user.id,
+                "username": user.username,
+                "email": user.email,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+                "is_super_admin": bool(
+                    getattr(getattr(user, "admin", None), "is_super_admin", False)
+                    or user.is_superuser
+                ),
+                "is_staff": user.is_staff,
+                "is_superuser": user.is_superuser,
+            }
+            for user in rows
+        ]
 
-    elif request.method == "POST":
-        # Create or promote a user to admin; only super admins may create super admins
-        data = request.data.copy()
-        user_data = data.get("user")
-        is_super_admin = data.get("is_super_admin", False)
-        if not user_data:
-            return Response(
-                {"error": "User data required"}, status=status.HTTP_400_BAD_REQUEST
-            )
-        # Detect if requester is super admin
-        requester_is_super_admin = request.user.is_superuser
-        if not requester_is_super_admin:
-            try:
-                requester_admin = Admin.objects.get(user=request.user)
-                requester_is_super_admin = requester_admin.is_super_admin
-            except Admin.DoesNotExist:
-                requester_is_super_admin = False
-        # If trying to create a super admin while requester is not super admin -> forbidden
-        if is_super_admin in [True, "true", "True", "1", 1]:
-            if not requester_is_super_admin:
-                return Response(
-                    {"error": "Only super admins can create super admins"},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
-        try:
-            with transaction.atomic():
-                # Attempt to find existing user by username or email
-                existing_user = None
-                username = None
-                email = None
-                if isinstance(user_data, dict):
-                    username = user_data.get("username")
-                    email = user_data.get("email")
-                # Prefer lookup by username
-                if username:
-                    try:
-                        existing_user = User.objects.get(username=username)
-                    except User.DoesNotExist:
-                        existing_user = None
-                # Fallback lookup by email
-                if not existing_user and email:
-                    try:
-                        existing_user = User.objects.get(email=email)
-                    except User.DoesNotExist:
-                        existing_user = None
+    return cached(key, TTL_ROSTER, build)
 
-                # If user already exists, do not add; return 409 so frontend can show a nice message
-                if existing_user:
-                    return Response(
-                        {"error": "User with this username or email already exists"},
-                        status=status.HTTP_409_CONFLICT,
-                    )
 
-                # Determine super admin flag
-                is_super_flag = bool(is_super_admin)
-                if isinstance(is_super_admin, str):
-                    is_super_flag = is_super_admin.lower() in ["true", "1", "yes"]
+def _create_admin_user(request):
+    user_data = request.data.get("user")
+    if not isinstance(user_data, dict):
+        return Response(
+            {"error": "User data required"}, status=status.HTTP_400_BAD_REQUEST
+        )
 
-                # Create a brand new user
-                user_serializer = UserSerializer(data=user_data)
-                user_serializer.is_valid(raise_exception=True)
-                user = user_serializer.save()
-                user.is_staff = True
-                if is_super_flag and requester_is_super_admin:
-                    user.is_superuser = True
-                user.save()
-                admin = Admin.objects.create(
-                    user=user,
-                    is_super_admin=is_super_flag if requester_is_super_admin else False,
-                )
-                return Response(
-                    {
-                        "id": admin.id,
-                        "username": user.username,
-                        "email": user.email,
-                        "first_name": user.first_name,
-                        "last_name": user.last_name,
-                        "is_super_admin": admin.is_super_admin,
-                        "is_staff": user.is_staff,
-                        "is_superuser": user.is_superuser,
-                    },
-                    status=status.HTTP_201_CREATED,
-                )
-        except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    wants_super_admin = str(request.data.get("is_super_admin", "")).lower() in {
+        "true",
+        "1",
+        "yes",
+    } or request.data.get("is_super_admin") is True
+
+    requester_is_super_admin = role_for(request.user)["is_super_admin"]
+    if wants_super_admin and not requester_is_super_admin:
+        return Response(
+            {"error": "Only super admins can create super admins"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    username = (user_data.get("username") or "").strip()
+    email = (user_data.get("email") or "").strip()
+    if User.objects.filter(Q(username__iexact=username) | Q(email__iexact=email)).exists():
+        return Response(
+            {"error": "User with this username or email already exists"},
+            status=status.HTTP_409_CONFLICT,
+        )
+
+    user_serializer = UserSerializer(data=user_data)
+    if not user_serializer.is_valid():
+        return Response(user_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    with transaction.atomic():
+        user = user_serializer.save()
+        user.is_staff = True
+        user.is_superuser = bool(wants_super_admin and requester_is_super_admin)
+        user.save(update_fields=["is_staff", "is_superuser"])
+        admin = Admin.objects.create(
+            user=user, is_super_admin=bool(wants_super_admin and requester_is_super_admin)
+        )
+
+    return Response(
+        {
+            "id": admin.id,
+            "user_id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "is_super_admin": admin.is_super_admin,
+            "is_staff": user.is_staff,
+            "is_superuser": user.is_superuser,
+        },
+        status=status.HTTP_201_CREATED,
+    )
 
 
 @api_view(["PATCH", "DELETE"])
 @permission_classes([IsAdmin])
 def delete_admin_user(request, user_id):
-    try:
-        user = User.objects.get(id=user_id)
+    user = User.objects.filter(id=user_id).first()
+    if user is None:
+        return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        # Only super admins can edit or delete admins
-        acting_is_super_admin = request.user.is_superuser
-        if not acting_is_super_admin:
-            try:
-                acting_admin = Admin.objects.get(user=request.user)
-                acting_is_super_admin = acting_admin.is_super_admin
-            except Admin.DoesNotExist:
-                acting_is_super_admin = False
+    if not role_for(request.user)["is_super_admin"]:
+        return Response(
+            {"error": "Only super admins can modify admins"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
 
-        if request.method == "PATCH":
-            if not acting_is_super_admin:
-                return Response(
-                    {"error": "Only super admins can edit admins"},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
-            # Update basic user fields and super admin flag
-            first_name = request.data.get("first_name")
-            last_name = request.data.get("last_name")
-            email = request.data.get("email")
-            is_super_admin = request.data.get("is_super_admin")
+    if request.method == "PATCH":
+        return _update_admin_user(request, user)
 
-            if first_name is not None:
-                user.first_name = first_name
-            if last_name is not None:
-                user.last_name = last_name
-            if email is not None:
-                user.email = email
+    if user.id == request.user.id:
+        return Response(
+            {"error": "You cannot delete your own account"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
 
-            # Ensure user remains staff
-            user.is_staff = True
+    is_super = user.is_superuser or Admin.objects.filter(
+        user=user, is_super_admin=True
+    ).exists()
+    if is_super:
+        return Response(
+            {"error": "Cannot delete super admin user"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
 
-            # Update superuser flag if provided
-            if is_super_admin is not None:
-                # Coerce to boolean from potential string values
-                if isinstance(is_super_admin, str):
-                    is_super_admin = is_super_admin.lower() in ["true", "1", "yes"]
-                user.is_superuser = bool(is_super_admin)
-                # Update or create Admin profile accordingly
-                admin_profile, _created = Admin.objects.get_or_create(user=user)
-                admin_profile.is_super_admin = bool(is_super_admin)
-                admin_profile.save()
-            else:
-                # Ensure Admin profile exists even if not toggling super flag
-                Admin.objects.get_or_create(user=user)
+    soft = str(
+        request.query_params.get("soft") or request.data.get("soft") or ""
+    ).lower() in {"true", "1", "yes"}
 
-            user.save()
-            return Response(
-                {
-                    "message": "Admin user updated successfully",
-                    "user_id": user.id,
-                    "first_name": user.first_name,
-                    "last_name": user.last_name,
-                    "email": user.email,
-                    "is_superuser": user.is_superuser,
-                    "is_staff": user.is_staff,
-                },
-                status=status.HTTP_200_OK,
-            )
-
-        # DELETE branch
-        if request.method == "DELETE" and not acting_is_super_admin:
-            return Response(
-                {"error": "Only super admins can delete admins"},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        # Prevent deletion of super admin
-        try:
-            admin_profile = Admin.objects.get(user=user)
-            if admin_profile.is_super_admin or user.is_superuser:
-                return Response(
-                    {"error": "Cannot delete super admin user"},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
-        except Admin.DoesNotExist:
-            if user.is_superuser:
-                return Response(
-                    {"error": "Cannot delete super admin user"},
-                    status=status.HTTP_403_FORBIDDEN,
-                )
-
-        # By default perform a hard delete, unless soft=true is explicitly provided
-        soft = request.query_params.get("soft") or request.data.get("soft")
-        if isinstance(soft, str):
-            soft = soft.lower() in ["true", "1", "yes"]
-        soft = bool(soft)
-
-        if not soft:
-            # Fully delete the user and related profiles
-            Admin.objects.filter(user=user).delete()
-            Student.objects.filter(user=user).delete()
-            username = user.username
-            email = user.email
-            user.delete()
-            return Response(
-                {
-                    "message": "Admin user hard-deleted successfully",
-                    "username": username,
-                    "email": email,
-                },
-                status=status.HTTP_200_OK,
-            )
-        else:
-            # Demote and remove admin profile (soft delete)
+    with transaction.atomic():
+        if soft:
+            # Demote: keep the account, drop the admin privileges.
             Admin.objects.filter(user=user).delete()
             user.is_staff = False
             user.is_superuser = False
-            user.save()
+            user.save(update_fields=["is_staff", "is_superuser"])
             return Response(
-                {"message": "Admin user deleted/demoted successfully"},
+                {"message": "Admin user demoted successfully"},
                 status=status.HTTP_200_OK,
             )
-    except User.DoesNotExist:
-        return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
+        username, email = user.username, user.email
+        user.delete()  # cascades to Admin/Student profiles
+
+    return Response(
+        {
+            "message": "Admin user deleted successfully",
+            "username": username,
+            "email": email,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+def _update_admin_user(request, user):
+    updates = []
+    for field in ("first_name", "last_name", "email"):
+        value = request.data.get(field)
+        if value is not None:
+            setattr(user, field, value)
+            updates.append(field)
+
+    if not user.is_staff:
+        user.is_staff = True
+        updates.append("is_staff")
+
+    is_super_admin = request.data.get("is_super_admin")
+    if is_super_admin is not None:
+        if isinstance(is_super_admin, str):
+            is_super_admin = is_super_admin.lower() in {"true", "1", "yes"}
+        is_super_admin = bool(is_super_admin)
+        user.is_superuser = is_super_admin
+        updates.append("is_superuser")
+        Admin.objects.update_or_create(
+            user=user, defaults={"is_super_admin": is_super_admin}
+        )
+    else:
+        Admin.objects.get_or_create(user=user)
+
+    if updates:
+        user.save(update_fields=list(dict.fromkeys(updates)))
+
+    return Response(
+        {
+            "message": "Admin user updated successfully",
+            "user_id": user.id,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "email": user.email,
+            "is_superuser": user.is_superuser,
+            "is_staff": user.is_staff,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Admin: statistics and exports
+# ---------------------------------------------------------------------------
 
 
 @api_view(["GET"])
 @permission_classes([IsAdmin])
 def admin_statistics(request):
-    """
-    Get admin statistics including total scholarships, users, etc.
-    """
-    try:
-        # Get total counts
-        total_scholarships = Scholarship.objects.count()
-        active_scholarships = Scholarship.objects.filter(is_active=True).count()
-        total_users = User.objects.count()
-        total_students = Student.objects.count()
-        total_admins = Admin.objects.count()
+    """Dashboard numbers.
 
-        # Get sign-up statistics
+    This used to fire eleven separate queries on every page load. It is now
+    three (scholarships, users, students) plus two grouped lookups, and the
+    whole payload is cached for two minutes.
+    """
+    key = make_key(NS_USERS, "statistics")
+
+    def build():
         today = timezone.now().date()
         start_of_week = today - timedelta(days=today.weekday())
         start_of_month = today.replace(day=1)
         start_of_year = today.replace(month=1, day=1)
+        thirty_days_ago = timezone.now() - timedelta(days=30)
 
-        weekly_signups = User.objects.filter(date_joined__date__gte=start_of_week).count()
-        monthly_signups = User.objects.filter(date_joined__date__gte=start_of_month).count()
-        yearly_signups = User.objects.filter(date_joined__date__gte=start_of_year).count()
-
-        # Get total unique countries from students
-        total_countries = Student.objects.exclude(country_of_residence__isnull=True).exclude(country_of_residence__exact='').values('country_of_residence').distinct().count()
-
-        # Get recent scholarships (last 30 days)
-        thirty_days_ago = datetime.now() - timedelta(days=30)
-        recent_scholarships = Scholarship.objects.filter(
-            created_at__gte=thirty_days_ago
-        ).count()
-
-        # Get scholarships by degree level (top 5)
-        from django.db.models import Count
-
+        scholarship_totals = Scholarship.objects.aggregate(
+            total=Count("id"),
+            active=Count("id", filter=Q(is_active=True)),
+            recent=Count("id", filter=Q(created_at__gte=thirty_days_ago)),
+            open_now=Count("id", filter=Q(is_active=True, deadline__gte=today)),
+        )
+        user_totals = User.objects.aggregate(
+            total=Count("id"),
+            weekly=Count("id", filter=Q(date_joined__date__gte=start_of_week)),
+            monthly=Count("id", filter=Q(date_joined__date__gte=start_of_month)),
+            yearly=Count("id", filter=Q(date_joined__date__gte=start_of_year)),
+            students=Count("id", filter=Q(student__isnull=False)),
+            admins=Count("id", filter=Q(admin__isnull=False)),
+        )
+        total_countries = (
+            Student.objects.exclude(country_of_residence="")
+            .values("country_of_residence")
+            .distinct()
+            .count()
+        )
         scholarships_by_degree = list(
             Scholarship.objects.values("degree_level")
             .annotate(count=Count("id"))
             .order_by("-count")[:5]
         )
 
-        scholarship_countries = list(
-            Scholarship.objects.values_list("host_country", flat=True)
-            .distinct()
-            .order_by("host_country")
-        )
-        scholarship_degrees = list(
-            Scholarship.objects.values_list("degree_level", flat=True)
-            .distinct()
-            .order_by("degree_level")
-        )
-
-        statistics = {
-            "total_scholarships": total_scholarships,
-            "active_scholarships": active_scholarships,
-            "total_users": total_users,
-            "total_students": total_students,
-            "total_admins": total_admins,
-            "weekly_signups": weekly_signups,
-            "monthly_signups": monthly_signups,
-            "yearly_signups": yearly_signups,
+        return {
+            "total_scholarships": scholarship_totals["total"],
+            "active_scholarships": scholarship_totals["active"],
+            "open_scholarships": scholarship_totals["open_now"],
+            "recent_scholarships": scholarship_totals["recent"],
+            "total_users": user_totals["total"],
+            "total_students": user_totals["students"],
+            "total_admins": user_totals["admins"],
+            "weekly_signups": user_totals["weekly"],
+            "monthly_signups": user_totals["monthly"],
+            "yearly_signups": user_totals["yearly"],
             "total_countries": total_countries,
-            "recent_scholarships": recent_scholarships,
             "scholarships_by_degree": scholarships_by_degree,
-            "scholarship_countries": scholarship_countries,
-            "scholarship_degrees": scholarship_degrees,
         }
 
-        return Response(statistics, status=status.HTTP_200_OK)
+    payload = cached(key, TTL_STATISTICS, build)
+    return _apply_cache_headers(
+        Response(payload), etag_for(NS_USERS, stats=True), PRIVATE_CACHE_CONTROL
+    )
 
-    except Exception as e:
-        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class _CsvEcho:
+    """File-like object whose write() returns the value, so csv.writer output
+    can be yielded straight into a StreamingHttpResponse."""
+
+    def write(self, value):
+        return value
+
+
+def _stream_csv(filename, header, rows):
+    writer = csv.writer(_CsvEcho())
+
+    def generate():
+        yield writer.writerow(header)
+        for row in rows:
+            yield writer.writerow(row)
+
+    response = StreamingHttpResponse(generate(), content_type="text/csv")
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
 
 
 @api_view(["GET"])
 @permission_classes([IsAdmin])
 def export_users_csv(request):
-    """
-    Export all users to CSV format
-    """
-    try:
-        import csv
-        from django.http import HttpResponse
+    stamp = timezone.now().strftime("%Y-%m-%d")
 
-        # Create the HttpResponse object with CSV header
-        response = HttpResponse(content_type="text/csv")
-        response["Content-Disposition"] = (
-            f'attachment; filename="users_export_{datetime.now().strftime("%Y-%m-%d")}.csv"'
+    def rows():
+        queryset = (
+            User.objects.select_related("student", "admin")
+            .order_by("id")
+            .iterator(chunk_size=500)
         )
-
-        writer = csv.writer(response)
-
-        # Write CSV header
-        writer.writerow(
-            [
-                "ID",
-                "Username",
-                "First Name",
-                "Last Name",
-                "Email",
-                "User Type",
-                "Date Joined",
-                "Last Login",
-                "Is Active",
-            ]
-        )
-
-        # Get all users with their related student/admin info
-        users = User.objects.select_related("student", "admin").all()
-
-        for user in users:
-            # Determine user type
-            user_type = "User"
-            if hasattr(user, "student"):
+        for user in queryset:
+            admin = getattr(user, "admin", None)
+            if admin is not None:
+                user_type = "Super Admin" if admin.is_super_admin else "Admin"
+            elif getattr(user, "student", None) is not None:
                 user_type = "Student"
-            elif hasattr(user, "admin"):
-                user_type = "Admin"
-                if user.admin.is_super_admin:
-                    user_type = "Super Admin"
+            else:
+                user_type = "User"
+            yield [
+                user.id,
+                user.username,
+                user.first_name,
+                user.last_name,
+                user.email,
+                user_type,
+                user.date_joined.strftime("%Y-%m-%d %H:%M:%S") if user.date_joined else "",
+                user.last_login.strftime("%Y-%m-%d %H:%M:%S") if user.last_login else "",
+                "Yes" if user.is_active else "No",
+            ]
 
-            writer.writerow(
-                [
-                    user.id,
-                    user.username,
-                    user.first_name,
-                    user.last_name,
-                    user.email,
-                    user_type,
-                    user.date_joined.strftime("%Y-%m-%d %H:%M:%S")
-                    if user.date_joined
-                    else "",
-                    user.last_login.strftime("%Y-%m-%d %H:%M:%S")
-                    if user.last_login
-                    else "",
-                    "Yes" if user.is_active else "No",
-                ]
-            )
-
-        return response
-
-    except Exception as e:
-        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    return _stream_csv(
+        f"users_export_{stamp}.csv",
+        [
+            "ID",
+            "Username",
+            "First Name",
+            "Last Name",
+            "Email",
+            "User Type",
+            "Date Joined",
+            "Last Login",
+            "Is Active",
+        ],
+        rows(),
+    )
 
 
 @api_view(["GET"])
 @permission_classes([IsAdmin])
 def export_scholarships_csv(request):
-    """
-    Export all active scholarships to CSV format.
-    """
-    try:
-        import csv
-        from django.http import HttpResponse
-        from datetime import datetime
+    stamp = timezone.now().strftime("%Y-%m-%d")
+    rows = (
+        Scholarship.objects.active()
+        .order_by("-created_at")
+        .values_list("name", "host_country", "degree_level", "deadline", "link")
+        .iterator(chunk_size=500)
+    )
+    return _stream_csv(
+        f"active_scholarships_{stamp}.csv",
+        ["Name", "Host Country", "Degree Level", "Deadline", "Link"],
+        rows,
+    )
 
-        response = HttpResponse(content_type="text/csv")
-        response["Content-Disposition"] = (
-            f'attachment; filename="active_scholarships_{datetime.now().strftime("%Y-%m-%d")}.csv"'
+
+# ---------------------------------------------------------------------------
+# Contact
+# ---------------------------------------------------------------------------
+
+
+class ContactThrottle(AnonRateThrottle):
+    scope = "contact"
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+@throttle_classes([ContactThrottle])
+def contact_message(request):
+    """Public contact form. Rate limited so the inbox cannot be flooded."""
+    serializer = ContactMessageSerializer(data=request.data)
+    if serializer.is_valid():
+        message = serializer.save()
+        # Stored first, emailed second: a delivery problem must never lose the
+        # message, and the sender should not wait on the provider round trip.
+        emails.send_contact_notification(message)
+        return Response(
+            {"message": "Thanks for reaching out - we'll be in touch shortly."},
+            status=status.HTTP_201_CREATED,
         )
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        writer = csv.writer(response)
-        writer.writerow(
-            [
-                "Name",
-                "Host Country",
-                "Degree Level",
-                "Deadline",
-            ]
-        )
 
-        scholarships = Scholarship.objects.filter(is_active=True)
+@api_view(["GET"])
+@permission_classes([IsAdmin])
+def contact_messages(request):
+    queryset = ContactMessage.objects.all()
+    paginator = ScholarshipPagination()
+    page = paginator.paginate_queryset(queryset, request)
+    return paginator.get_paginated_response(
+        ContactMessageSerializer(page, many=True).data
+    )
 
-        for scholarship in scholarships:
-            writer.writerow(
-                [
-                    scholarship.name,
-                    scholarship.host_country,
-                    scholarship.degree_level,
-                    scholarship.deadline,
-                ]
-            )
 
-        return response
+# ---------------------------------------------------------------------------
+# Root
+# ---------------------------------------------------------------------------
 
-    except Exception as e:
-        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+API_INFO = {
+    "message": "Welcome to the MyScholy API",
+    "version": "2.0",
+    "description": "REST API powering the MyScholy scholarship board",
+    "status": "operational",
+    "endpoints": {
+        "authentication": {
+            "login": "/api/auth/login/",
+            "logout": "/api/auth/logout/",
+            "register_student": "/api/auth/student/register/",
+            "register_admin": "/api/auth/admin/register/",
+            "profile": "/api/auth/profile/",
+            "token_refresh": "/api/auth/token/refresh/",
+        },
+        "scholarships": {
+            "list": "/api/scholarships/",
+            "detail": "/api/scholarships/{id}/",
+            "facets": "/api/scholarships/facets/",
+        },
+        "admin": {
+            "scholarships": "/api/admin/scholarships/",
+            "scholarship_detail": "/api/admin/scholarships/{id}/",
+            "statistics": "/api/admin/statistics/",
+            "users": "/api/admins/",
+            "user_detail": "/api/admins/{user_id}/",
+            "export_users": "/api/admin/users/export/",
+            "export_scholarships": "/api/admin/scholarships/export/",
+            "contact_messages": "/api/admin/contact/",
+        },
+        "public": {"contact": "/api/contact/"},
+    },
+}
+
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def home(request):
-    """
-    Home route providing API information and available endpoints
-    """
-    # Check if request is from browser (HTML) or API client (JSON)
-    accept_header = request.META.get("HTTP_ACCEPT", "")
-    wants_html = (
-        "text/html" in accept_header and "application/json" not in accept_header
-    )
-
-    api_info = {
-        "message": "Welcome to the Scholarships Board API",
-        "version": "1.0",
-        "description": "A Django REST API for managing scholarships and users",
-        "endpoints": {
-            "authentication": {
-                "login": "/api/auth/login/",
-                "logout": "/api/auth/logout/",
-                "register_student": "/api/auth/student/register/",
-                "register_admin": "/api/auth/admin/register/",
-                "profile": "/api/auth/profile/",
-                "token_refresh": "/api/auth/token/refresh/",
-            },
-            "scholarships": {
-                "list": "/api/scholarships/",
-                "detail": "/api/scholarships/{id}/",
-                "admin_list": "/api/admin/scholarships/",
-                "admin_detail": "/api/admin/scholarships/{id}/",
-                "delete": "/api/admin/scholarships/{id}/delete/",
-            },
-            "admin": {
-                "statistics": "/api/admin/statistics/",
-                "users": "/api/admins/",
-                "user_detail": "/api/admins/{user_id}/",
-                "export_users": "/api/admin/users/export/",
-            },
-        },
-        "status": "operational",
-        "documentation": "Contact admin for API documentation",
-    }
-
-    if wants_html:
-        html_content = f"""
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Scholarships Board API</title>
-            <style>
-                body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; }}
-                .container {{ max-width: 1200px; margin: 0 auto; background: white; border-radius: 15px; box-shadow: 0 20px 40px rgba(0,0,0,0.1); overflow: hidden; }}
-                .header {{ background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); padding: 40px; text-align: center; color: white; }}
-                .header h1 {{ margin: 0; font-size: 2.5em; font-weight: 300; }}
-                .header p {{ margin: 10px 0 0 0; opacity: 0.9; font-size: 1.2em; }}
-                .content {{ padding: 40px; }}
-                .status {{ display: inline-block; background: #10b981; color: white; padding: 8px 16px; border-radius: 20px; font-weight: bold; font-size: 0.9em; }}
-                .endpoints {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 30px; margin-top: 40px; }}
-                .endpoint-group {{ background: #f8fafc; border-radius: 12px; padding: 25px; border-left: 4px solid #4facfe; }}
-                .endpoint-group h3 {{ margin: 0 0 20px 0; color: #1e293b; font-size: 1.3em; }}
-                .endpoint-list {{ list-style: none; padding: 0; margin: 0; }}
-                .endpoint-list li {{ margin: 12px 0; }}
-                .endpoint-list a {{ color: #3b82f6; text-decoration: none; font-family: 'Courier New', monospace; font-size: 0.9em; padding: 8px 12px; background: #eff6ff; border-radius: 6px; display: inline-block; transition: all 0.2s; }}
-                .endpoint-list a:hover {{ background: #dbeafe; transform: translateX(5px); }}
-                .footer {{ background: #f1f5f9; padding: 20px 40px; text-align: center; color: #64748b; border-top: 1px solid #e2e8f0; }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <div class="header">
-                    <h1>🎓 Scholarships Board API</h1>
-                    <p>A comprehensive REST API for managing scholarships and users</p>
-                    <div style="margin-top: 20px;">
-                        <span class="status">● {api_info["status"].upper()}</span>
-                    </div>
-                </div>
-
-                <div class="content">
-                    <div class="endpoints">
-                        <div class="endpoint-group">
-                            <h3>🔐 Authentication</h3>
-                            <ul class="endpoint-list">
-                                <li><a href="/api/auth/login/">POST /api/auth/login/</a></li>
-                                <li><a href="/api/auth/logout/">POST /api/auth/logout/</a></li>
-                                <li><a href="/api/auth/student/register/">POST /api/auth/student/register/</a></li>
-                                <li><a href="/api/auth/admin/register/">POST /api/auth/admin/register/</a></li>
-                                <li><a href="/api/auth/profile/">GET /api/auth/profile/</a></li>
-                                <li><a href="/api/auth/token/refresh/">POST /api/auth/token/refresh/</a></li>
-                            </ul>
-                        </div>
-
-                        <div class="endpoint-group">
-                            <h3>📚 Scholarships</h3>
-                            <ul class="endpoint-list">
-                                <li><a href="/api/scholarships/">GET /api/scholarships/</a></li>
-                                <li><a href="/api/scholarships/">POST /api/scholarships/</a></li>
-                                <li><a href="#">GET /api/scholarships/{{id}}/</a></li>
-                                <li><a href="/api/admin/scholarships/">GET /api/admin/scholarships/</a></li>
-                                <li><a href="#">DELETE /api/admin/scholarships/{{id}}/delete/</a></li>
-                            </ul>
-                        </div>
-
-                        <div class="endpoint-group">
-                            <h3>👥 Admin Management</h3>
-                            <ul class="endpoint-list">
-                                <li><a href="/api/admin/statistics/">GET /api/admin/statistics/</a></li>
-                                <li><a href="/api/admins/">GET /api/admins/</a></li>
-                                <li><a href="/api/admins/">POST /api/admins/</a></li>
-                                <li><a href="#">DELETE /api/admins/{{user_id}}/</a></li>
-                                <li><a href="/api/admin/users/export/">GET /api/admin/users/export/</a></li>
-                            </ul>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="footer">
-                    <p>API Version {api_info["version"]} | Built with Django REST Framework</p>
-                </div>
-            </div>
-        </body>
-        </html>
-        """
-        return HttpResponse(html_content, content_type="text/html")
-    else:
-        return Response(api_info, status=status.HTTP_200_OK)
+    """API index. Renders a template for browsers, JSON for API clients."""
+    accept = request.META.get("HTTP_ACCEPT", "")
+    if "text/html" in accept and "application/json" not in accept:
+        response = render(request, "scholarships/api_index.html", {"info": API_INFO})
+        response["Cache-Control"] = "public, max-age=3600"
+        return response
+    return Response(API_INFO, status=status.HTTP_200_OK)
