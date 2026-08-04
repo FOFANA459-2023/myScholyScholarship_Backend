@@ -136,6 +136,20 @@ class AuthTests(TestCase):
             self.assertEqual(response.status_code, 200, identifier)
             self.assertIn("access", response.json()["tokens"])
 
+    def test_login_stamps_last_login(self):
+        """The custom login bypasses SIMPLE_JWT's UPDATE_LAST_LOGIN hook, so
+        it must set last_login itself - the user directory reads it."""
+        user = User.objects.get(username="ama")
+        self.assertIsNone(user.last_login)
+        response = self.client.post(
+            "/api/auth/login/",
+            {"username": "ama", "password": "Str0ngPassw0rd!"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        user.refresh_from_db()
+        self.assertIsNotNone(user.last_login)
+
     def test_login_rejects_bad_password(self):
         response = self.client.post(
             "/api/auth/login/", {"username": "ama", "password": "wrong"}, format="json"

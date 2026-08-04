@@ -322,6 +322,12 @@ def user_login(request):
             status=status.HTTP_401_UNAUTHORIZED,
         )
 
+    # SIMPLE_JWT's UPDATE_LAST_LOGIN only fires on its own token view, which
+    # this custom login bypasses - so last_login must be stamped here or the
+    # user directory would show stale (or never-set) sign-in dates.
+    user.last_login = timezone.now()
+    user.save(update_fields=["last_login"])
+
     return Response(
         {
             "message": "Login successful",
@@ -338,6 +344,10 @@ def student_register(request):
     serializer = StudentSerializer(data=request.data)
     if serializer.is_valid():
         student = serializer.save()
+        # Registration signs the student straight in (tokens below), so it
+        # counts as their first login.
+        student.user.last_login = timezone.now()
+        student.user.save(update_fields=["last_login"])
         emails.send_welcome_email(student.user)
         return Response(
             {
@@ -611,7 +621,15 @@ def admin_scholarship_repost(request, pk):
 @api_view(["GET", "POST"])
 @permission_classes([IsAdmin])
 def admin_users(request):
+    """POST (add an admin) is open to every admin; GET (the roster of who
+    has access) is super-admin-only - a regular admin should not be able to
+    enumerate the other administrators."""
     if request.method == "GET":
+        if not role_for(request.user)["is_super_admin"]:
+            return Response(
+                {"error": "Super administrator access is required."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         # The management page polls this; never let a browser or proxy hold a
         # copy - freshness is handled by the server-side versioned cache.
         response = Response(_list_admin_users(), status=status.HTTP_200_OK)

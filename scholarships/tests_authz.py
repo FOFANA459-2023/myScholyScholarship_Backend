@@ -74,8 +74,32 @@ class RoleAuthorizationTests(TestCase):
 
     def test_admin_can_read_admin_surfaces(self):
         bearer(self.client, self.admin_user)
-        for url in ["/api/admin/scholarships/", "/api/admin/statistics/", "/api/admins/"]:
+        for url in ["/api/admin/scholarships/", "/api/admin/statistics/"]:
             self.assertEqual(self.client.get(url).status_code, 200, url)
+
+    def test_admin_can_add_admins_but_not_list_them(self):
+        """A regular admin may grow the team, but must not be able to
+        enumerate who the other administrators are."""
+        bearer(self.client, self.admin_user)
+        self.assertEqual(self.client.get("/api/admins/").status_code, 403)
+        response = self.client.post(
+            "/api/admins/",
+            {
+                "user": {
+                    "username": "newadmin",
+                    "email": "na@example.com",
+                    "password": "SafePass123",
+                    "first_name": "New",
+                    "last_name": "Admin",
+                },
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.content)
+
+    def test_super_admin_can_list_admins(self):
+        bearer(self.client, self.super_user)
+        self.assertEqual(self.client.get("/api/admins/").status_code, 200)
 
     def test_admin_cannot_modify_or_delete_admin_accounts(self):
         bearer(self.client, self.admin_user)
