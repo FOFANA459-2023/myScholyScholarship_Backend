@@ -69,7 +69,12 @@ from .serializers import (
     UserSerializer,
 )
 
-PUBLIC_CACHE_CONTROL = f"public, max-age=60, stale-while-revalidate={TTL_LIST}"
+# Always revalidate: a browser holding yesterday's list body must not keep
+# serving it after an admin reposts or archives something. The version-scoped
+# ETag makes revalidation nearly free - unchanged data answers with an empty
+# 304, changed data arrives immediately. (The previous stale-while-revalidate
+# window meant a reposted scholarship could take minutes to appear.)
+PUBLIC_CACHE_CONTROL = "public, max-age=0, must-revalidate"
 PRIVATE_CACHE_CONTROL = "private, max-age=0, must-revalidate"
 # The filter dropdowns must never offer a value that is no longer in the data,
 # so facets are always revalidated. The ETag is version-scoped, so an unchanged
@@ -890,6 +895,74 @@ def admin_statistics(request):
     )
 
 
+@api_view(["GET"])
+@permission_classes([IsAdmin])
+def admin_user_directory(request):
+    """Paginated, searchable roster of every account with its profile data -
+    the on-screen counterpart of the users CSV export.
+
+    Personal data handling: the payload is cached only server-side, in the
+    versioned users namespace (any account write invalidates it, and the
+    30-second TTL keeps even direct database edits fresh). The response is
+    marked ``private, no-store`` so no browser or proxy ever keeps a copy,
+    and the frontend deliberately skips its sessionStorage cache for it.
+    """
+    q = str(request.query_params.get("q", "")).strip()[:120]
+    try:
+        page = max(1, int(request.query_params.get("page", 1)))
+    except (TypeError, ValueError):
+        page = 1
+    page_size = str(request.query_params.get("page_size", ""))
+
+    key = make_key(NS_USERS, "directory", q=q, page=page, page_size=page_size)
+
+    def build():
+        rows = User.objects.select_related("student", "admin").order_by("-date_joined")
+        if q:
+            rows = rows.filter(
+                Q(username__icontains=q)
+                | Q(email__icontains=q)
+                | Q(first_name__icontains=q)
+                | Q(last_name__icontains=q)
+            )
+
+        paginator = ScholarshipPagination()
+        page_rows = paginator.paginate_queryset(rows, request)
+
+        def serialize(user):
+            admin = getattr(user, "admin", None)
+            student = getattr(user, "student", None)
+            if admin is not None:
+                user_type = "Super Admin" if admin.is_super_admin else "Admin"
+            elif student is not None:
+                user_type = "Student"
+            else:
+                user_type = "User"
+            return {
+                "id": user.id,
+                "username": user.username,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+                "email": user.email,
+                "user_type": user_type,
+                "phone": student.phone if student else "",
+                "country_of_citizenship": student.country_of_citizenship if student else "",
+                "country_of_residence": student.country_of_residence if student else "",
+                "education_level": student.get_education_level_display() if student else "",
+                "date_joined": user.date_joined,
+                "last_login": user.last_login,
+                "is_active": user.is_active,
+            }
+
+        return paginator.get_paginated_response(
+            [serialize(user) for user in page_rows]
+        ).data
+
+    response = Response(cached(key, TTL_ROSTER, build), status=status.HTTP_200_OK)
+    response["Cache-Control"] = "private, no-store"
+    return response
+
+
 class _CsvEcho:
     """File-like object whose write() returns the value, so csv.writer output
     can be yielded straight into a StreamingHttpResponse."""
@@ -974,52 +1047,20 @@ def export_users_csv(request):
 @api_view(["GET"])
 @permission_classes([IsAdmin])
 def export_scholarships_csv(request):
-    """The full catalogue - live and archived - with every field an admin
-    would need to audit or re-import it, long text columns last."""
+    """Live scholarships only (active, deadline still ahead) - the same rows
+    the public board shows - with exactly the columns the team works from."""
     stamp = timezone.now().strftime("%Y-%m-%d")
-    today = timezone.now().date()
-
-    def rows():
-        queryset = Scholarship.objects.order_by("-created_at").iterator(chunk_size=500)
-        for row in queryset:
-            if not row.is_active:
-                row_status = "Hidden"
-            elif row.deadline < today:
-                row_status = "Expired"
-            else:
-                row_status = "Live"
-            yield [
-                row.id,
-                row.name,
-                row.host_country,
-                row.degree_level,
-                row.deadline.isoformat(),
-                row_status,
-                row.author,
-                row.link,
-                row.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-                row.description,
-                row.benefits,
-                row.eligibility,
-            ]
-
+    rows = (
+        Scholarship.objects.active()
+        .open_for_application()
+        .order_by("-created_at")
+        .values_list("name", "host_country", "degree_level", "deadline", "link")
+        .iterator(chunk_size=500)
+    )
     return _stream_csv(
-        f"scholarships_export_{stamp}.csv",
-        [
-            "ID",
-            "Name",
-            "Host Country",
-            "Degree Level",
-            "Deadline",
-            "Status",
-            "Author",
-            "Link",
-            "Created At",
-            "Description",
-            "Benefits",
-            "Eligibility",
-        ],
-        rows(),
+        f"active_scholarships_{stamp}.csv",
+        ["Name", "Host Country", "Degree Level", "Deadline", "Link"],
+        rows,
     )
 
 
@@ -1091,6 +1132,7 @@ API_INFO = {
             "statistics": "/api/admin/statistics/",
             "users": "/api/admins/",
             "user_detail": "/api/admins/{user_id}/",
+            "user_directory": "/api/admin/users/",
             "export_users": "/api/admin/users/export/",
             "export_scholarships": "/api/admin/scholarships/export/",
             "contact_messages": "/api/admin/contact/",

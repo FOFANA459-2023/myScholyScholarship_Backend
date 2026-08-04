@@ -267,19 +267,51 @@ class AdminApiTests(TestCase):
         response = self.client.delete(f"/api/admins/{self.super_admin.id}/")
         self.assertEqual(response.status_code, 403)
 
-    def test_scholarship_export_streams_full_catalogue(self):
+    def test_scholarship_export_streams_live_rows_only(self):
         response = self.client.get("/api/admin/scholarships/export/")
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.streaming)
         self.assertIn("attachment", response["Content-Disposition"])
         body = b"".join(response.streaming_content).decode()
-        header = body.splitlines()[0]
-        for column in ("ID", "Name", "Status", "Link", "Description", "Eligibility"):
-            self.assertIn(column, header)
-        # Archived rows are exported too, labelled by status.
-        self.assertIn("Inactive", body)
-        self.assertIn("Hidden", body)
-        self.assertIn("Live", body)
+        self.assertEqual(
+            body.splitlines()[0], "Name,Host Country,Degree Level,Deadline,Link"
+        )
+        # Hidden (and expired) rows stay out of the export.
+        self.assertNotIn("Inactive", body)
+        self.assertIn("Chevening Scholarship", body)
+
+    def test_user_directory_is_paginated_and_never_stored(self):
+        Student.objects.create(
+            user=User.objects.create_user(
+                username="amara", password="Str0ngPassw0rd!", email="amara@example.com"
+            ),
+            phone="+231 770 000 000",
+            country_of_citizenship="Liberia",
+            country_of_residence="Ghana",
+            education_level="undergraduate",
+        )
+        cache.clear()
+
+        response = self.client.get("/api/admin/users/")
+        self.assertEqual(response.status_code, 200)
+        # Personal data must never be kept by a browser or proxy.
+        self.assertEqual(response["Cache-Control"], "private, no-store")
+        body = response.json()
+        self.assertIn("results", body)
+        self.assertIn("total_pages", body)
+        by_username = {row["username"]: row for row in body["results"]}
+        self.assertEqual(by_username["amara"]["user_type"], "Student")
+        self.assertEqual(by_username["amara"]["country_of_citizenship"], "Liberia")
+        self.assertEqual(by_username["amara"]["education_level"], "Undergraduate")
+        self.assertEqual(by_username["boss"]["user_type"], "Super Admin")
+
+        # Search narrows the roster.
+        search = self.client.get("/api/admin/users/?q=amara").json()
+        self.assertEqual([row["username"] for row in search["results"]], ["amara"])
+
+    def test_user_directory_requires_admin(self):
+        anon = APIClient()
+        self.assertIn(anon.get("/api/admin/users/").status_code, (401, 403))
 
     def test_users_export_includes_student_profile(self):
         response = self.client.get("/api/admin/users/export/")

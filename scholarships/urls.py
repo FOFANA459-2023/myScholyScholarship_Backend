@@ -60,6 +60,7 @@ urlpatterns = [
     path("admins/<int:user_id>/", views.delete_admin_user, name="admin-user-detail"),
     # Admin: dashboard
     path("admin/statistics/", views.admin_statistics, name="admin-statistics"),
+    path("admin/users/", views.admin_user_directory, name="admin-user-directory"),
     path("admin/users/export/", views.export_users_csv, name="export-users-csv"),
     path("admin/contact/", views.contact_messages, name="admin-contact-messages"),
     # Public contact form
