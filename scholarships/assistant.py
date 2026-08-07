@@ -115,25 +115,8 @@ def _context_scholarships(message):
     )
 
 
-def ask(message, history):
-    """One assistant turn. ``history`` is [{'role': 'user'|'model', 'text': str}]."""
-    system = SYSTEM_PROMPT.format(
-        today=f"{timezone.now().date():%d %B %Y}",
-        context=_context_scholarships(message),
-    )
-
-    contents = [
-        {"role": turn["role"], "parts": [{"text": turn["text"]}]}
-        for turn in history[-MAX_HISTORY_TURNS:]
-    ]
-    contents.append({"role": "user", "parts": [{"text": message}]})
-
-    payload = {
-        "system_instruction": {"parts": [{"text": system}]},
-        "contents": contents,
-        "generationConfig": {"temperature": 0.4, "maxOutputTokens": 800},
-    }
-
+def _generate(payload):
+    """POST a generateContent payload; return the reply text ('' if empty)."""
     url = GEMINI_ENDPOINT.format(model=settings.GEMINI_MODEL)
     request = urllib.request.Request(
         url,
@@ -165,9 +148,31 @@ def ask(message, history):
 
     try:
         parts = data["candidates"][0]["content"]["parts"]
-        reply = "".join(part.get("text", "") for part in parts).strip()
+        return "".join(part.get("text", "") for part in parts).strip()
     except (KeyError, IndexError):
-        reply = ""
+        return ""
+
+
+def ask(message, history):
+    """One assistant turn. ``history`` is [{'role': 'user'|'model', 'text': str}]."""
+    system = SYSTEM_PROMPT.format(
+        today=f"{timezone.now().date():%d %B %Y}",
+        context=_context_scholarships(message),
+    )
+
+    contents = [
+        {"role": turn["role"], "parts": [{"text": turn["text"]}]}
+        for turn in history[-MAX_HISTORY_TURNS:]
+    ]
+    contents.append({"role": "user", "parts": [{"text": message}]})
+
+    reply = _generate(
+        {
+            "system_instruction": {"parts": [{"text": system}]},
+            "contents": contents,
+            "generationConfig": {"temperature": 0.4, "maxOutputTokens": 800},
+        }
+    )
 
     if not reply:
         # Safety block or empty candidate - treat as a soft failure.
@@ -176,3 +181,92 @@ def ask(message, history):
             "the team via the contact page."
         )
     return reply
+
+
+# ---------------------------------------------------------------------------
+# Admin: extract scholarship fields from pasted text
+# ---------------------------------------------------------------------------
+
+EXTRACT_FIELDS = (
+    "name",
+    "description",
+    "deadline",
+    "host_country",
+    "degree_level",
+    "benefits",
+    "eligibility",
+    "link",
+)
+
+EXTRACT_PROMPT = """\
+You extract structured scholarship data for the MyScholy admin posting form.
+The user pastes a scholarship announcement (copied from a website, email or
+PDF). Fill each field from the text ONLY - never invent or guess information
+that is not there. If a field is not present in the text, return an empty
+string for it.
+
+Field rules:
+- name: the scholarship's official name/title.
+- description: 2-4 sentences summarising what the scholarship is and who it is
+  for, written from the announcement's own information.
+- deadline: the application deadline as YYYY-MM-DD. Empty if no full date is
+  given. Today is {today} - use it only to resolve which year a stated
+  deadline like "15 March" falls in (never as the deadline itself).
+- host_country: the country where the study takes place, in English
+  (e.g. "United Kingdom", "China").
+- degree_level: the level of study, normalised to wording like "Bachelors",
+  "Masters", "PhD", "Masters, PhD" when several apply.
+- benefits: what the scholarship covers, ONE benefit per line, no bullet
+  characters.
+- eligibility: the requirements, ONE requirement per line, no bullet
+  characters.
+- link: the official application or information URL if one appears in the
+  text, otherwise empty.
+"""
+
+EXTRACT_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {field: {"type": "STRING"} for field in EXTRACT_FIELDS},
+    "required": list(EXTRACT_FIELDS),
+}
+
+
+def extract_scholarship(text):
+    """Extract posting-form fields from pasted announcement text.
+
+    Returns a dict with every EXTRACT_FIELDS key, values '' when the text does
+    not contain that piece of information.
+    """
+    reply = _generate(
+        {
+            "system_instruction": {
+                "parts": [
+                    {
+                        "text": EXTRACT_PROMPT.format(
+                            today=f"{timezone.now().date():%Y-%m-%d}"
+                        )
+                    }
+                ]
+            },
+            "contents": [{"role": "user", "parts": [{"text": text}]}],
+            "generationConfig": {
+                "temperature": 0,
+                "maxOutputTokens": 2000,
+                "responseMimeType": "application/json",
+                "responseSchema": EXTRACT_SCHEMA,
+            },
+        }
+    )
+
+    try:
+        data = json.loads(reply)
+    except (TypeError, json.JSONDecodeError) as exc:
+        logger.warning("Extraction returned non-JSON output")
+        raise AssistantError(
+            "The text could not be analysed. Try pasting a cleaner copy of "
+            "the announcement."
+        ) from exc
+
+    return {
+        field: str(data.get(field) or "").strip() for field in EXTRACT_FIELDS
+    }

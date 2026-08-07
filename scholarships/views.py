@@ -1155,6 +1155,42 @@ def assistant_chat(request):
     return response
 
 
+@api_view(["POST"])
+@permission_classes([IsAdmin])
+def assistant_extract_scholarship(request):
+    """Admin helper: extract posting-form fields from pasted announcement text.
+
+    Backing for the "paste & auto-fill" box on the post-scholarship form. The
+    model only reads the pasted text; fields it cannot find come back as empty
+    strings, and the admin reviews everything before posting.
+    """
+    if not settings.GEMINI_API_KEY:
+        return Response(
+            {"error": "The AI helper is not configured on this server."},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    text = request.data.get("text")
+    if not isinstance(text, str) or len(text.strip()) < 40:
+        return Response(
+            {"error": "Paste the scholarship announcement text first (at least a few sentences)."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    text = text.strip()[:20000]
+
+    try:
+        fields = assistant.extract_scholarship(text)
+    except assistant.AssistantError as exc:
+        return Response(
+            {"error": str(exc)},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    response = Response({"fields": fields})
+    response["Cache-Control"] = "private, no-store"
+    return response
+
+
 class ContactThrottle(AnonRateThrottle):
     scope = "contact"
 

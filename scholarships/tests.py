@@ -757,3 +757,78 @@ class AssistantTests(TestCase):
         context = _context_scholarships("scholarships in Japan please")
         self.assertIn("Tokyo Tech Award", context)
         self.assertNotIn("Closed Japan Award", context)
+
+
+class AssistantExtractTests(TestCase):
+    """The admin paste-and-auto-fill extraction endpoint."""
+
+    URL = "/api/admin/assistant/extract-scholarship/"
+    SAMPLE = (
+        "The Example Fellowship 2027 offers fully funded masters study in "
+        "Germany. Deadline: 1 March 2027. Apply at https://example.org/apply."
+    )
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.admin_user = User.objects.create_user("staff", password="x")
+        Admin.objects.create(user=self.admin_user)
+
+    def test_requires_admin(self):
+        with self.settings(GEMINI_API_KEY="test-key"):
+            response = self.client.post(self.URL, {"text": self.SAMPLE}, format="json")
+        self.assertIn(response.status_code, (401, 403))
+
+    def test_rejects_short_text(self):
+        self.client.force_authenticate(self.admin_user)
+        with self.settings(GEMINI_API_KEY="test-key"):
+            response = self.client.post(self.URL, {"text": "too short"}, format="json")
+        self.assertEqual(response.status_code, 400)
+
+    def test_disabled_without_key(self):
+        self.client.force_authenticate(self.admin_user)
+        with self.settings(GEMINI_API_KEY=""):
+            response = self.client.post(self.URL, {"text": self.SAMPLE}, format="json")
+        self.assertEqual(response.status_code, 503)
+
+    def test_returns_extracted_fields(self):
+        from unittest.mock import patch
+
+        extracted = {
+            "name": "Example Fellowship 2027",
+            "description": "Fully funded masters study in Germany.",
+            "deadline": "2027-03-01",
+            "host_country": "Germany",
+            "degree_level": "Masters",
+            "benefits": "Tuition\nStipend",
+            "eligibility": "",
+            "link": "https://example.org/apply",
+        }
+        self.client.force_authenticate(self.admin_user)
+        with self.settings(GEMINI_API_KEY="test-key"):
+            with patch(
+                "scholarships.assistant.extract_scholarship", return_value=extracted
+            ) as mock_extract:
+                response = self.client.post(
+                    self.URL, {"text": self.SAMPLE}, format="json"
+                )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["fields"], extracted)
+        self.assertEqual(response["Cache-Control"], "private, no-store")
+        mock_extract.assert_called_once()
+
+    def test_extract_parses_model_json(self):
+        from unittest.mock import patch
+
+        from .assistant import extract_scholarship
+
+        model_reply = (
+            '{"name": "Example Fellowship", "description": "d", "deadline": "",'
+            ' "host_country": "Germany", "degree_level": "Masters",'
+            ' "benefits": "Tuition", "eligibility": "", "link": ""}'
+        )
+        with patch("scholarships.assistant._generate", return_value=model_reply):
+            fields = extract_scholarship("some pasted announcement")
+        self.assertEqual(fields["name"], "Example Fellowship")
+        self.assertEqual(fields["deadline"], "")
+        self.assertEqual(fields["host_country"], "Germany")

@@ -68,4 +68,10 @@ urlpatterns = [
     # Site assistant (Gemini-backed popup bot)
     path("assistant/", views.assistant_status, name="assistant-status"),
     path("assistant/chat/", views.assistant_chat, name="assistant-chat"),
+    # Admin AI helper: paste text -> auto-filled posting form
+    path(
+        "admin/assistant/extract-scholarship/",
+        views.assistant_extract_scholarship,
+        name="assistant-extract-scholarship",
+    ),
 ]
