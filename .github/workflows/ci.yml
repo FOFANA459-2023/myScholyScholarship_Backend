@@ -1,11 +1,13 @@
-# MyScholy backend CI/CD (Django REST, deployed to Render).
+# MyScholy backend CI/CD (Django REST; Oracle Cloud primary, Render secondary).
 #
 # Every push and PR: lint (ruff) -> Django tests with coverage -> dependency
-# audit. The deploy hook fires ONLY on push to main after every gate passes -
-# keep Render's own "Auto-Deploy on commit" turned OFF so this pipeline is the
-# single deploy trigger.
+# audit. Deploys fire ONLY on push to main after every gate passes: the Render
+# deploy hook (secondary/staging) and an SSH deploy to the Oracle Cloud VM
+# (primary, https://myscholy.duckdns.org). Keep Render's own "Auto-Deploy on
+# commit" turned OFF so this pipeline is the single deploy trigger.
 #
 # Required repository configuration is documented in .github/DEPLOYMENT.md.
+# Oracle deploy needs the ORACLE_HOST and ORACLE_SSH_KEY repository secrets.
 
 name: CI
 
@@ -98,3 +100,38 @@ jobs:
           echo "Render deploy triggered."
         env:
           DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+
+  deploy-oracle:
+    name: Deploy / Oracle (primary)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [lint, test, audit]
+    environment:
+      name: production-oracle
+      url: https://myscholy.duckdns.org
+    steps:
+      - name: Deploy over SSH
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_SSH_KEY: ${{ secrets.ORACLE_SSH_KEY }}
+        run: |
+          if [ -z "$ORACLE_HOST" ] || [ -z "$ORACLE_SSH_KEY" ]; then
+            echo "ORACLE_HOST / ORACLE_SSH_KEY repository secrets are not set" >&2
+            exit 1
+          fi
+          printf '%s\n' "$ORACLE_SSH_KEY" > deploy_key
+          chmod 600 deploy_key
+          ssh -i deploy_key -o StrictHostKeyChecking=accept-new ubuntu@"$ORACLE_HOST" '
+            set -e
+            cd ~/myscholy-backend
+            git pull --ff-only
+            venv/bin/pip install -q -r requirements.txt
+            venv/bin/python manage.py migrate --noinput
+            venv/bin/python manage.py collectstatic --noinput
+            sudo systemctl restart myscholy
+          '
+      - name: Health check
+        run: |
+          sleep 5
+          curl -fsS -o /dev/null -w 'API healthy: HTTP %{http_code}\n' https://myscholy.duckdns.org/api/scholarships/

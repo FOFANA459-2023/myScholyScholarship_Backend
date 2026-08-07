@@ -1,10 +1,10 @@
-# Backend CI/CD setup (Render)
+# Backend CI/CD setup (Oracle Cloud primary, Render secondary)
 
 Workflows in this repo:
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| `ci.yml` | every PR + push to main | ruff lint, Django tests with coverage, pip-audit; triggers the Render deploy **only from main** after all gates pass |
+| `ci.yml` | every PR + push to main | ruff lint, Django tests with coverage, pip-audit; deploys **only from main** after all gates pass — Render (deploy hook) and the Oracle Cloud VM (SSH: pull, migrate, collectstatic, restart, health check) |
 | `pr-review.yml` | every PR | dependency review (active now) + Claude automated review (activates when `ANTHROPIC_API_KEY` is added; skips quietly until then) |
 | `codeql.yml` | PRs, main, weekly | Python static security analysis |
 
@@ -20,6 +20,8 @@ only a personal record; the values must be entered here.
 | Secret | Value |
 | --- | --- |
 | `RENDER_DEPLOY_HOOK_URL` | the deploy hook URL in your local `backend/.env` |
+| `ORACLE_HOST` | the Oracle instance's public IP (`168.138.202.139`) |
+| `ORACLE_SSH_KEY` | full contents of the instance's **private** SSH key file (the one *without* `.pub`), including the BEGIN/END lines |
 | `ANTHROPIC_API_KEY` | *(later - the Claude PR review stays skipped until this exists)* |
 
 ## Render: turn Auto-Deploy OFF (completely)
