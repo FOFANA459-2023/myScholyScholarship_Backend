@@ -1,4 +1,6 @@
+import os
 from datetime import timedelta
+from unittest import mock
 
 from django.contrib.auth.models import User
 from django.core.cache import cache
@@ -1415,3 +1417,46 @@ class ProviderFailoverTests(TestCase):
                 None,
             )
         self.assertTrue(caught.exception.unsupported)
+
+
+class SecureDefaultsTests(TestCase):
+    """Settings must be safe on a host that sets no environment variables."""
+
+    def _reload_settings_with_env(self, env):
+        """Re-import the settings module against a controlled environment.
+
+        ``load_dotenv`` is stubbed out because settings.py loads .env with
+        override=True - without this the developer's own .env would decide the
+        outcome and the assertion would prove nothing on another machine.
+        Reloading mutates only the module object; django.conf.settings holds a
+        separate copy, so the running suite is unaffected.
+        """
+        import importlib
+
+        from scholarship_backend import settings as settings_module
+
+        with mock.patch("dotenv.load_dotenv", return_value=False):
+            with mock.patch.dict(os.environ, env, clear=True):
+                return importlib.reload(settings_module)
+
+    def tearDown(self):
+        # Restore the module to the real environment for any later test.
+        self._reload_settings_with_env(dict(os.environ))
+
+    def test_debug_defaults_to_false(self):
+        """Debug is opt-in. A deployment that forgets DJANGO_DEBUG must not
+        serve Django's technical error pages to the public."""
+        self.assertFalse(self._reload_settings_with_env({}).DEBUG)
+
+    def test_debug_can_be_opted_into(self):
+        self.assertTrue(
+            self._reload_settings_with_env({"DJANGO_DEBUG": "True"}).DEBUG
+        )
+
+    def test_production_hardening_follows_debug(self):
+        """With debug off the security block must engage on its own."""
+        settings_module = self._reload_settings_with_env({})
+        self.assertTrue(settings_module.SESSION_COOKIE_SECURE)
+        self.assertTrue(settings_module.CSRF_COOKIE_SECURE)
+        self.assertTrue(settings_module.SECURE_CONTENT_TYPE_NOSNIFF)
+        self.assertEqual(settings_module.X_FRAME_OPTIONS, "DENY")

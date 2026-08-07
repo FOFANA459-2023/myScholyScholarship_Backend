@@ -33,7 +33,13 @@ def env_int(name, default):
 # ---------------------------------------------------------------------------
 
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "changeme-in-dev")
-DEBUG = env_bool("DJANGO_DEBUG", True)
+
+# Secure by default: debug must be opted INTO, never inherited. Defaulting to
+# True meant any host that simply had no DJANGO_DEBUG variable served Django's
+# technical error pages publicly - source snippets, local variables, settings
+# and the full URL map. Local development opts in through .env (see
+# .env.example) and the e2e stack through settings_ci.
+DEBUG = env_bool("DJANGO_DEBUG", False)
 
 ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS") or [
     "myscholyscholarship-backend.onrender.com",
