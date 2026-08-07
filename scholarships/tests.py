@@ -667,3 +667,93 @@ class ScholarshipValidationTests(TestCase):
         response = self.post(description="Short.")
         self.assertEqual(response.status_code, 400)
         self.assertIn("description", response.json())
+
+
+class AssistantTests(TestCase):
+    """The Gemini-backed popup assistant endpoints."""
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+
+    def test_status_reports_disabled_without_key(self):
+        with self.settings(GEMINI_API_KEY=""):
+            response = self.client.get("/api/assistant/")
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.data["enabled"])
+
+    def test_status_reports_enabled_with_key(self):
+        with self.settings(GEMINI_API_KEY="test-key"):
+            response = self.client.get("/api/assistant/")
+        self.assertTrue(response.data["enabled"])
+
+    def test_chat_disabled_without_key(self):
+        with self.settings(GEMINI_API_KEY=""):
+            response = self.client.post(
+                "/api/assistant/chat/", {"message": "hello"}, format="json"
+            )
+        self.assertEqual(response.status_code, 503)
+
+    def test_chat_rejects_empty_message(self):
+        with self.settings(GEMINI_API_KEY="test-key"):
+            response = self.client.post(
+                "/api/assistant/chat/", {"message": "   "}, format="json"
+            )
+        self.assertEqual(response.status_code, 400)
+
+    def test_chat_relays_reply_and_never_caches(self):
+        from unittest.mock import patch
+
+        with self.settings(GEMINI_API_KEY="test-key"):
+            with patch(
+                "scholarships.assistant.ask", return_value="Try the Chevening listing."
+            ) as mock_ask:
+                response = self.client.post(
+                    "/api/assistant/chat/",
+                    {
+                        "message": "Any UK scholarships?",
+                        "history": [
+                            {"role": "user", "text": "hi"},
+                            {"role": "model", "text": "hello"},
+                            {"role": "bogus", "text": "dropped"},
+                        ],
+                    },
+                    format="json",
+                )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["reply"], "Try the Chevening listing.")
+        self.assertEqual(response["Cache-Control"], "private, no-store")
+        # Malformed history entries are dropped before reaching the provider.
+        self.assertEqual(
+            mock_ask.call_args[0][1],
+            [{"role": "user", "text": "hi"}, {"role": "model", "text": "hello"}],
+        )
+
+    def test_chat_translates_provider_failure(self):
+        from unittest.mock import patch
+
+        from .assistant import AssistantError
+
+        with self.settings(GEMINI_API_KEY="test-key"):
+            with patch(
+                "scholarships.assistant.ask",
+                side_effect=AssistantError("The assistant is taking a break."),
+            ):
+                response = self.client.post(
+                    "/api/assistant/chat/", {"message": "hello"}, format="json"
+                )
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("break", response.data["error"])
+
+    def test_context_uses_only_live_matching_rows(self):
+        from .assistant import _context_scholarships
+
+        make_scholarship(name="Tokyo Tech Award", host_country="Japan")
+        make_scholarship(
+            name="Closed Japan Award",
+            host_country="Japan",
+            deadline=timezone.now().date() - timedelta(days=1),
+        )
+        context = _context_scholarships("scholarships in Japan please")
+        self.assertIn("Tokyo Tech Award", context)
+        self.assertNotIn("Closed Japan Award", context)

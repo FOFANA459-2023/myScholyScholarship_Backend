@@ -222,6 +222,8 @@ REST_FRAMEWORK = {
         "login": "10/min",
         "contact": "5/min",
         "password_reset": "5/min",
+        # Keeps the Gemini free tier from being drained by one visitor.
+        "assistant": "8/min",
     },
     # The browsable API renderer is convenient locally but adds noticeable
     # overhead and surface area in production.
@@ -281,6 +283,20 @@ EMAIL_BACKEND = (
 
 # Reset links die after an hour rather than Django's default three days.
 PASSWORD_RESET_TIMEOUT = env_int("PASSWORD_RESET_TIMEOUT", 3600)
+
+# ---------------------------------------------------------------------------
+# Site assistant (Google Gemini)
+# ---------------------------------------------------------------------------
+# SECRET - server-side only, like RESEND_API_KEY. Without a key the assistant
+# endpoints report themselves disabled and the frontend hides the widget
+# entirely (which also keeps it out of the e2e suite's way).
+
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+# "gemini-flash-lite-latest" is Google's rolling alias for the current
+# low-latency flash-lite model: it survives model deprecations without a code
+# change and answers in ~1-2s, where the full flash models' "thinking" phase
+# can blow past the request timeout.
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-lite-latest").strip()
 
 # Where reset links point; the deployed frontend origin in production.
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173").rstrip("/")

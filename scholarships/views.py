@@ -39,7 +39,7 @@ from rest_framework_simplejwt.token_blacklist.models import (
 )
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from . import emails
+from . import assistant, emails
 from .cache import (
     NS_SCHOLARSHIPS,
     NS_USERS,
@@ -1086,6 +1086,73 @@ def export_scholarships_csv(request):
 # ---------------------------------------------------------------------------
 # Contact
 # ---------------------------------------------------------------------------
+
+
+class AssistantThrottle(AnonRateThrottle):
+    scope = "assistant"
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def assistant_status(request):
+    """Whether the site assistant is configured. The widget hides when not."""
+    response = Response({"enabled": bool(settings.GEMINI_API_KEY)})
+    response["Cache-Control"] = "public, max-age=300"
+    return response
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+@throttle_classes([AssistantThrottle])
+def assistant_chat(request):
+    """One turn of the popup assistant conversation.
+
+    The Gemini key stays server-side; this endpoint validates the payload,
+    grounds the model with live scholarship rows and relays the reply. Chat
+    content is never cached or stored.
+    """
+    if not settings.GEMINI_API_KEY:
+        return Response(
+            {"error": "The assistant is not available right now."},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    message = request.data.get("message")
+    if not isinstance(message, str) or not message.strip():
+        return Response(
+            {"error": "Please type a question."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    message = message.strip()
+    if len(message) > 1000:
+        return Response(
+            {"error": "Please keep questions under 1000 characters."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    history = request.data.get("history") or []
+    if not isinstance(history, list):
+        history = []
+    cleaned_history = []
+    for turn in history[-10:]:
+        if not isinstance(turn, dict):
+            continue
+        role = turn.get("role")
+        text = turn.get("text")
+        if role in ("user", "model") and isinstance(text, str) and text.strip():
+            cleaned_history.append({"role": role, "text": text.strip()[:2000]})
+
+    try:
+        reply = assistant.ask(message, cleaned_history)
+    except assistant.AssistantError as exc:
+        return Response(
+            {"error": str(exc)},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    response = Response({"reply": reply})
+    response["Cache-Control"] = "private, no-store"
+    return response
 
 
 class ContactThrottle(AnonRateThrottle):

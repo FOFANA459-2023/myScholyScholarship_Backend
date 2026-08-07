@@ -65,4 +65,7 @@ urlpatterns = [
     path("admin/contact/", views.contact_messages, name="admin-contact-messages"),
     # Public contact form
     path("contact/", views.contact_message, name="contact-message"),
+    # Site assistant (Gemini-backed popup bot)
+    path("assistant/", views.assistant_status, name="assistant-status"),
+    path("assistant/chat/", views.assistant_chat, name="assistant-chat"),
 ]
