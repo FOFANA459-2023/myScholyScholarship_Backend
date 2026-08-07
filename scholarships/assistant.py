@@ -12,6 +12,7 @@ visitor's question text and public scholarship rows.
 """
 
 import base64
+import hashlib
 import html
 import ipaddress
 import json
@@ -23,11 +24,37 @@ import urllib.parse
 import urllib.request
 
 from django.conf import settings
+from django.core.cache import cache as django_cache
 from django.utils import timezone
 
+from .cache import NS_SCHOLARSHIPS, get_version
 from .models import Scholarship
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Provider-call cache
+# ---------------------------------------------------------------------------
+# Identical inputs never reach Gemini twice: replies are stored (Redis in
+# production) and served back for repeat requests. Keys include the
+# scholarship cache version wherever the reply is grounded on board data, so
+# any admin write invalidates them instantly, plus today's date wherever the
+# prompt embeds it. Only successful replies are stored - failures always
+# retry. This protects the free-tier quota without ever serving stale advice.
+
+AI_CACHE_TTL = 24 * 3600
+
+
+def _ai_cached(kind, parts, producer, ttl=AI_CACHE_TTL):
+    raw = json.dumps([kind, parts], sort_keys=True, default=str)
+    key = f"myscholy:ai:{kind}:{hashlib.sha256(raw.encode()).hexdigest()}"
+    hit = django_cache.get(key)
+    if hit is not None:
+        return hit["value"]
+    value = producer()
+    # Envelope so a legitimately-None result is still a cache hit.
+    django_cache.set(key, {"value": value}, ttl)
+    return value
 
 GEMINI_ENDPOINT = (
     "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -160,7 +187,24 @@ def _generate(payload):
 
 
 def ask(message, history):
-    """One assistant turn. ``history`` is [{'role': 'user'|'model', 'text': str}]."""
+    """One assistant turn. ``history`` is [{'role': 'user'|'model', 'text': str}].
+
+    Cached: the same question with the same conversation history reuses the
+    stored reply until the board changes or the day rolls over.
+    """
+    return _ai_cached(
+        "chat",
+        [
+            get_version(NS_SCHOLARSHIPS),
+            str(timezone.now().date()),
+            message.strip().lower(),
+            history,
+        ],
+        lambda: _ask(message, history),
+    )
+
+
+def _ask(message, history):
     system = SYSTEM_PROMPT.format(
         today=f"{timezone.now().date():%d %B %Y}",
         context=_context_scholarships(message),
@@ -297,7 +341,21 @@ def extract_scholarship(text=None, pdf_bytes=None):
     Returns a dict with every EXTRACT_FIELDS key, values '' when the source
     does not contain that piece of information. PDFs go to the model as-is
     (Gemini reads them natively, scanned pages included).
+
+    Cached by content hash: re-submitting the same announcement or document
+    reuses the stored extraction.
     """
+    digest = hashlib.sha256(
+        pdf_bytes if pdf_bytes is not None else (text or "").encode()
+    ).hexdigest()
+    return _ai_cached(
+        "extract",
+        [str(timezone.now().date()), "pdf" if pdf_bytes is not None else "text", digest],
+        lambda: _extract_scholarship(text=text, pdf_bytes=pdf_bytes),
+    )
+
+
+def _extract_scholarship(text=None, pdf_bytes=None):
     if pdf_bytes is not None:
         parts = [
             {
@@ -408,7 +466,22 @@ def personalized_assessment(answers):
     ``answers`` is a dict of quiz answers (ASSESSMENT_KEYS). Returns
     {'headline', 'summary', 'next_steps', 'scholarships'} where scholarships
     are real rows resolved from the model's picks.
+
+    Cached: the answer space is small, so identical answer sets reuse the
+    stored plan until the board changes or the day rolls over.
     """
+    return _ai_cached(
+        "assessment",
+        [
+            get_version(NS_SCHOLARSHIPS),
+            str(timezone.now().date()),
+            sorted(answers.items()),
+        ],
+        lambda: _personalized_assessment(answers),
+    )
+
+
+def _personalized_assessment(answers):
     keywords = ASSESSMENT_LEVEL_KEYWORDS.get(answers.get("level"), ())
     live = Scholarship.objects.active().open_for_application().order_by("deadline")
     if keywords:
@@ -530,6 +603,17 @@ def find_possible_duplicate(fields):
     if not name:
         return None
 
+    return _ai_cached(
+        "duplicate",
+        [
+            get_version(NS_SCHOLARSHIPS),
+            {key: fields.get(key) or "" for key in ("name", "host_country", "degree_level", "deadline", "link")},
+        ],
+        lambda: _find_possible_duplicate(fields, name),
+    )
+
+
+def _find_possible_duplicate(fields, name):
     words = [w.strip(".,()'\"") for w in name.split()]
     words = [
         w

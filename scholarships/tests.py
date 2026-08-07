@@ -1229,3 +1229,93 @@ class AiQuotaThrottleTests(TestCase):
 
         self.assertEqual(AssessmentQuotaThrottle().duration, 20 * 3600)
         self.assertEqual(ChatQuotaThrottle().duration, 20 * 3600)
+
+
+class AiResponseCacheTests(TestCase):
+    """Identical AI inputs must never reach the provider twice."""
+
+    def setUp(self):
+        cache.clear()
+
+    def test_identical_chat_reuses_reply(self):
+        from unittest.mock import patch
+
+        from .assistant import ask
+
+        with patch(
+            "scholarships.assistant._generate", return_value="You can apply via the board."
+        ) as mock_generate:
+            first = ask("How do I apply?", [])
+            second = ask("How do I apply?", [])
+        self.assertEqual(first, second)
+        mock_generate.assert_called_once()
+
+    def test_chat_cache_ignores_letter_case(self):
+        from unittest.mock import patch
+
+        from .assistant import ask
+
+        with patch(
+            "scholarships.assistant._generate", return_value="reply"
+        ) as mock_generate:
+            ask("How do I apply?", [])
+            ask("HOW DO I APPLY?  ", [])
+        mock_generate.assert_called_once()
+
+    def test_board_change_invalidates_chat_cache(self):
+        from unittest.mock import patch
+
+        from .assistant import ask
+
+        with patch(
+            "scholarships.assistant._generate", return_value="reply"
+        ) as mock_generate:
+            ask("Any new scholarships?", [])
+            make_scholarship(name="Fresh Award")  # bumps the cache version
+            ask("Any new scholarships?", [])
+        self.assertEqual(mock_generate.call_count, 2)
+
+    def test_identical_assessment_reuses_plan(self):
+        from unittest.mock import patch
+
+        from .assistant import personalized_assessment
+
+        reply = '{"headline": "h", "summary": "s", "next_steps": [], "scholarship_ids": []}'
+        answers = {"level": "graduate", "region": "Asia"}
+        with patch(
+            "scholarships.assistant._generate", return_value=reply
+        ) as mock_generate:
+            first = personalized_assessment(answers)
+            second = personalized_assessment(dict(answers))
+        self.assertEqual(first, second)
+        mock_generate.assert_called_once()
+
+    def test_identical_extraction_reuses_fields(self):
+        from unittest.mock import patch
+
+        from .assistant import extract_scholarship
+
+        reply = (
+            '{"name": "A", "description": "", "deadline": "", "host_country": "",'
+            ' "degree_level": "", "benefits": "", "eligibility": "", "link": ""}'
+        )
+        with patch(
+            "scholarships.assistant._generate", return_value=reply
+        ) as mock_generate:
+            extract_scholarship(text="The same announcement text pasted twice.")
+            extract_scholarship(text="The same announcement text pasted twice.")
+        mock_generate.assert_called_once()
+
+    def test_failures_are_not_cached(self):
+        from unittest.mock import patch
+
+        from .assistant import AssistantError, ask
+
+        with patch(
+            "scholarships.assistant._generate",
+            side_effect=[AssistantError("down"), "recovered"],
+        ) as mock_generate:
+            with self.assertRaises(AssistantError):
+                ask("Hello?", [])
+            self.assertEqual(ask("Hello?", []), "recovered")
+        self.assertEqual(mock_generate.call_count, 2)
