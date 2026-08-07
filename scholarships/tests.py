@@ -1178,8 +1178,10 @@ class AiQuotaThrottleTests(TestCase):
 
         second = self._post_assessment(self.client)
         self.assertEqual(second.status_code, 429)
-        self.assertIn("check back", second.data["error"])
-        self.assertIn("logging in", second.data["error"])
+        # Guests get the log-in invitation, not the reset countdown.
+        self.assertIn("log in", second.data["error"])
+        self.assertNotIn("check back", second.data["error"])
+        self.assertTrue(second.data["requires_login"])
         self.assertIn("retry_after_seconds", second.data)
         self.assertTrue(second.has_header("Retry-After"))
 
@@ -1192,9 +1194,10 @@ class AiQuotaThrottleTests(TestCase):
 
         sixth = self._post_assessment(self.client)
         self.assertEqual(sixth.status_code, 429)
+        # Logged-in users get the reset countdown, not a log-in invitation.
         self.assertIn("check back", sixth.data["error"])
-        # Logged-in users are not told to log in.
-        self.assertNotIn("logging in", sixth.data["error"])
+        self.assertNotIn("log in", sixth.data["error"])
+        self.assertFalse(sixth.data["requires_login"])
 
     def _post_chat(self, client):
         from unittest.mock import patch
@@ -1210,7 +1213,8 @@ class AiQuotaThrottleTests(TestCase):
             self.assertEqual(self._post_chat(self.client).status_code, 200)
         fourth = self._post_chat(self.client)
         self.assertEqual(fourth.status_code, 429)
-        self.assertIn("check back", fourth.data["error"])
+        self.assertIn("log in", fourth.data["error"])
+        self.assertTrue(fourth.data["requires_login"])
 
     def test_logged_in_chat_gets_ten(self):
         user = User.objects.create_user("chat-user", password="x")

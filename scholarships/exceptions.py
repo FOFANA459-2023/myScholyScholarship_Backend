@@ -1,8 +1,13 @@
 """Project-wide DRF exception handling.
 
-Turns throttle rejections into a friendly, non-technical message that tells
-the visitor when to come back, instead of DRF's default
-"Request was throttled. Expected available in 71997 seconds."
+Turns throttle rejections into intentional, professional messages (no
+contractions) instead of DRF's default "Request was throttled. Expected
+available in 71997 seconds." Each audience gets its own message:
+
+- Guests are told they have reached the guest limit and invited to log in,
+  because logging in genuinely unlocks a higher allowance.
+- Logged-in users are told when their allowance resets, because there is
+  nothing further to unlock.
 """
 
 import math
@@ -30,14 +35,21 @@ def friendly_exception_handler(exc, context):
         is_anonymous = not (
             request and request.user and request.user.is_authenticated
         )
-        message = (
-            "You've reached your usage limit for now. It resets automatically - "
-            f"please check back {_when(wait)}."
-        )
+
         if is_anonymous:
-            message += " Tip: logging in gives you a higher daily limit."
+            message = (
+                "You have reached the limit for guests. Please log in to "
+                "continue - registered users receive a higher daily allowance."
+            )
+        else:
+            message = (
+                "You have reached your daily limit. It resets automatically - "
+                f"please check back {_when(wait)}."
+            )
+
         response.data = {
             "error": message,
+            "requires_login": is_anonymous,
             "retry_after_seconds": wait,
         }
 

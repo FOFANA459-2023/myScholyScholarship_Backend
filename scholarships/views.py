@@ -293,7 +293,7 @@ def user_login(request):
         return Response(
             {
                 "error": (
-                    "We couldn't find an account with that email or username. "
+                    "We could not find an account with that email or username. "
                     "Double-check the spelling, or create a new account."
                 )
             },
@@ -316,7 +316,7 @@ def user_login(request):
         return Response(
             {
                 "error": (
-                    "That password isn't right. Try again, or use "
+                    "That password is not correct. Try again, or use "
                     "“Forgot password?” to reset it."
                 )
             },
@@ -430,7 +430,7 @@ def password_reset_request(request):
         return Response(
             {
                 "error": (
-                    "We couldn't find an account with that email. "
+                    "We could not find an account with that email. "
                     "Check for typos, or create a new account instead."
                 )
             },
