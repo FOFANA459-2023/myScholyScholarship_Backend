@@ -1,0 +1,10 @@
+# Caddy reverse proxy for the MyScholy backend.
+# Copy to /etc/caddy/Caddyfile and replace api.yourdomain.com with the real
+# hostname, then: sudo systemctl reload caddy
+#
+# Caddy obtains and renews the Let's Encrypt certificate automatically, and
+# sets X-Forwarded-Proto so Django's SECURE_PROXY_SSL_HEADER works unchanged.
+
+api.yourdomain.com {
+    reverse_proxy 127.0.0.1:8000
+}
