@@ -20,9 +20,30 @@ only a personal record; the values must be entered here.
 | Secret | Value |
 | --- | --- |
 | `RENDER_DEPLOY_HOOK_URL` | the deploy hook URL in your local `backend/.env` |
+| `RENDER_API_KEY` | a Render API key (dashboard.render.com → Account Settings → API Keys). Without it the pipeline still deploys, but only warns instead of verifying that the build succeeded |
 | `ORACLE_HOST` | the Oracle instance's public IP (`168.138.202.139`) |
 | `ORACLE_SSH_KEY` | full contents of the instance's **private** SSH key file (the one *without* `.pub`), including the BEGIN/END lines |
 | `ANTHROPIC_API_KEY` | *(later - the Claude PR review stays skipped until this exists)* |
+
+## Why the deploy job waits
+
+Firing Render's deploy hook only proves Render **accepted** the request - the
+build result arrives minutes later. Before `RENDER_API_KEY` existed, a failed
+Render build still left CI green, so "deploy failed" emails could arrive while
+the pipeline reported success. The deploy job now polls Render's API until the
+build reaches a terminal state and fails on `build_failed` / `update_failed`.
+
+A `canceled` deploy is reported as a warning rather than a failure: it means
+another deploy superseded this one, which is exactly what happens when Render's
+Auto-Deploy races the hook. If that warning appears on every push, Auto-Deploy
+is still on - see below.
+
+## Python version
+
+`backend/.python-version` pins the interpreter to 3.13, matching CI and local
+development. Without it Render picks its own default and may change it during
+any rebuild, which breaks packages that have no wheels for the new version
+(`psycopg2-binary` is the usual casualty).
 
 ## Render: turn Auto-Deploy OFF (completely)
 
