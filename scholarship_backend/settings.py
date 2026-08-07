@@ -305,6 +305,12 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 # can blow past the request timeout.
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-lite-latest").strip()
 
+# SECRET - fallback provider. When Gemini answers 429 the assistant fails
+# over to Groq for a minute and back again; with no Groq key configured the
+# assistant simply reports busy instead.
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile").strip()
+
 # Where reset links point; the deployed frontend origin in production.
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173").rstrip("/")
 

@@ -1319,3 +1319,99 @@ class AiResponseCacheTests(TestCase):
                 ask("Hello?", [])
             self.assertEqual(ask("Hello?", []), "recovered")
         self.assertEqual(mock_generate.call_count, 2)
+
+
+class ProviderFailoverTests(TestCase):
+    """Gemini <-> Groq automatic failover in assistant._generate."""
+
+    def setUp(self):
+        cache.clear()
+
+    def _generate(self):
+        from .assistant import _generate
+
+        return _generate(
+            "system", [{"role": "user", "text": "hi"}], temperature=0, max_tokens=50
+        )
+
+    def test_gemini_rate_limit_fails_over_to_groq(self):
+        from unittest.mock import patch
+
+        from .assistant import ProviderError
+
+        with self.settings(GEMINI_API_KEY="g-key", GROQ_API_KEY="q-key"):
+            with patch(
+                "scholarships.assistant._gemini_call",
+                side_effect=ProviderError("429", rate_limited=True),
+            ) as gemini:
+                with patch(
+                    "scholarships.assistant._groq_call", return_value="from groq"
+                ) as groq:
+                    self.assertEqual(self._generate(), "from groq")
+                    # Gemini is now cooling down: the next request goes
+                    # straight to Groq without touching Gemini again.
+                    self.assertEqual(self._generate(), "from groq")
+            self.assertEqual(gemini.call_count, 1)
+            self.assertEqual(groq.call_count, 2)
+
+    def test_both_rate_limited_reports_busy(self):
+        from unittest.mock import patch
+
+        from .assistant import AssistantError, ProviderError
+
+        with self.settings(GEMINI_API_KEY="g-key", GROQ_API_KEY="q-key"):
+            with patch(
+                "scholarships.assistant._gemini_call",
+                side_effect=ProviderError("429", rate_limited=True),
+            ):
+                with patch(
+                    "scholarships.assistant._groq_call",
+                    side_effect=ProviderError("429", rate_limited=True),
+                ):
+                    with self.assertRaises(AssistantError) as caught:
+                        self._generate()
+        self.assertIn("Too many users", str(caught.exception))
+        self.assertIn("try again in a minute", str(caught.exception))
+
+    def test_gemini_transient_error_also_fails_over(self):
+        from unittest.mock import patch
+
+        from .assistant import ProviderError
+
+        with self.settings(GEMINI_API_KEY="g-key", GROQ_API_KEY="q-key"):
+            with patch(
+                "scholarships.assistant._gemini_call",
+                side_effect=ProviderError("unreachable"),
+            ):
+                with patch(
+                    "scholarships.assistant._groq_call", return_value="from groq"
+                ):
+                    self.assertEqual(self._generate(), "from groq")
+
+    def test_no_groq_key_keeps_gemini_only_behaviour(self):
+        from unittest.mock import patch
+
+        from .assistant import AssistantError, ProviderError
+
+        with self.settings(GEMINI_API_KEY="g-key", GROQ_API_KEY=""):
+            with patch(
+                "scholarships.assistant._gemini_call",
+                side_effect=ProviderError("429", rate_limited=True),
+            ):
+                with patch("scholarships.assistant._groq_call") as groq:
+                    with self.assertRaises(AssistantError):
+                        self._generate()
+                    groq.assert_not_called()
+
+    def test_pdf_requests_never_reach_groq(self):
+        from .assistant import ProviderError, _groq_call
+
+        with self.assertRaises(ProviderError) as caught:
+            _groq_call(
+                "system",
+                [{"role": "user", "pdf": b"%PDF-", "text": "extract"}],
+                0,
+                100,
+                None,
+            )
+        self.assertTrue(caught.exception.unsupported)

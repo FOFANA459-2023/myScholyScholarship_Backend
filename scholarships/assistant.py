@@ -148,42 +148,186 @@ def _context_scholarships(message):
     )
 
 
-def _generate(payload):
-    """POST a generateContent payload; return the reply text ('' if empty)."""
-    url = GEMINI_ENDPOINT.format(model=settings.GEMINI_MODEL)
+# ---------------------------------------------------------------------------
+# Providers: Gemini primary, Groq fallback, automatic back-and-forth
+# ---------------------------------------------------------------------------
+# When one provider answers 429 (its per-minute limit), it is put on a
+# 60-second cooldown and requests flow to the other; when the cooldown lapses
+# traffic flows back. Both keys live only in the server-side .env.
+
+GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
+PROVIDER_COOLDOWN_SECONDS = 60
+
+BUSY_MESSAGE = (
+    "Too many users are performing this action at the same time. "
+    "Please try again in a minute."
+)
+UNREACHABLE_MESSAGE = (
+    "The assistant could not be reached. Please try again shortly."
+)
+
+
+class ProviderError(Exception):
+    """One provider failed; the router decides what happens next."""
+
+    def __init__(self, message, *, rate_limited=False, unsupported=False):
+        super().__init__(message)
+        self.rate_limited = rate_limited
+        self.unsupported = unsupported
+
+
+def _post_json(url, headers, payload, provider):
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode(),
         headers={
             "Content-Type": "application/json",
-            "x-goog-api-key": settings.GEMINI_API_KEY,
+            # Groq sits behind Cloudflare, which rejects the default Python
+            # urllib signature (error 1010); a normal client string passes.
+            "User-Agent": "myScholy-backend/1.0",
+            **headers,
         },
         method="POST",
     )
-
     try:
         with urllib.request.urlopen(request, timeout=25) as response:
-            data = json.load(response)
+            return json.load(response)
     except urllib.error.HTTPError as exc:
-        # 429 = free-tier quota exhausted; anything else is logged for us.
         body = exc.read().decode(errors="replace")[:500]
-        logger.warning("Gemini API error %s: %s", exc.code, body)
-        raise AssistantError(
-            "The assistant is taking a break right now. Please try again in a "
-            "few minutes, or reach us through the contact page.",
-            retryable=exc.code == 429,
+        logger.warning("%s API error %s: %s", provider, exc.code, body)
+        raise ProviderError(
+            f"{provider} error {exc.code}", rate_limited=exc.code == 429
         ) from exc
     except (urllib.error.URLError, TimeoutError) as exc:
-        logger.warning("Gemini API unreachable: %s", exc)
-        raise AssistantError(
-            "The assistant could not be reached. Please try again shortly."
-        ) from exc
+        logger.warning("%s API unreachable: %s", provider, exc)
+        raise ProviderError(f"{provider} unreachable") from exc
 
+
+def _gemini_call(system, messages, temperature, max_tokens, json_schema):
+    contents = []
+    for message in messages:
+        parts = []
+        if message.get("pdf") is not None:
+            parts.append(
+                {
+                    "inline_data": {
+                        "mime_type": "application/pdf",
+                        "data": base64.b64encode(message["pdf"]).decode(),
+                    }
+                }
+            )
+        if message.get("text"):
+            parts.append({"text": message["text"]})
+        contents.append({"role": message["role"], "parts": parts})
+
+    generation = {"temperature": temperature, "maxOutputTokens": max_tokens}
+    if json_schema is not None:
+        generation["responseMimeType"] = "application/json"
+        generation["responseSchema"] = json_schema
+
+    payload = {"contents": contents, "generationConfig": generation}
+    if system:
+        payload["system_instruction"] = {"parts": [{"text": system}]}
+
+    data = _post_json(
+        GEMINI_ENDPOINT.format(model=settings.GEMINI_MODEL),
+        {"x-goog-api-key": settings.GEMINI_API_KEY},
+        payload,
+        "Gemini",
+    )
     try:
         parts = data["candidates"][0]["content"]["parts"]
         return "".join(part.get("text", "") for part in parts).strip()
     except (KeyError, IndexError):
         return ""
+
+
+def _groq_call(system, messages, temperature, max_tokens, json_schema):
+    if any(message.get("pdf") is not None for message in messages):
+        # Groq's chat API has no PDF input; only Gemini can serve those.
+        raise ProviderError("Groq cannot read PDFs", unsupported=True)
+
+    system_text = system or ""
+    if json_schema is not None:
+        # Groq's json_object mode needs the schema described in the prompt.
+        system_text += (
+            "\n\nRespond only with a valid JSON object matching this schema: "
+            + json.dumps(json_schema)
+        )
+
+    chat = []
+    if system_text.strip():
+        chat.append({"role": "system", "content": system_text})
+    for message in messages:
+        chat.append(
+            {
+                "role": "assistant" if message["role"] == "model" else "user",
+                "content": message.get("text", ""),
+            }
+        )
+
+    payload = {
+        "model": settings.GROQ_MODEL,
+        "messages": chat,
+        "temperature": temperature,
+        "max_completion_tokens": max_tokens,
+    }
+    if json_schema is not None:
+        payload["response_format"] = {"type": "json_object"}
+
+    data = _post_json(
+        GROQ_ENDPOINT,
+        {"Authorization": f"Bearer {settings.GROQ_API_KEY}"},
+        payload,
+        "Groq",
+    )
+    try:
+        return (data["choices"][0]["message"]["content"] or "").strip()
+    except (KeyError, IndexError):
+        return ""
+
+
+# Function names, resolved at call time so tests can patch the callables.
+_PROVIDERS = (
+    ("gemini", "GEMINI_API_KEY", "_gemini_call"),
+    ("groq", "GROQ_API_KEY", "_groq_call"),
+)
+
+
+def _cooldown_key(name):
+    return f"myscholy:ai:cooldown:{name}"
+
+
+def _generate(system, messages, *, temperature, max_tokens, json_schema=None):
+    """Route one generation through the first available provider.
+
+    Gemini first; a rate-limited provider sits out for 60 seconds while the
+    other takes the traffic, then rejoins automatically. When every configured
+    provider is rate-limited at once the caller gets the busy message.
+    """
+    any_rate_limited = False
+    for name, key_setting, func_name in _PROVIDERS:
+        if not getattr(settings, key_setting, ""):
+            continue
+        if django_cache.get(_cooldown_key(name)):
+            any_rate_limited = True
+            continue
+        call = globals()[func_name]
+        try:
+            return call(system, messages, temperature, max_tokens, json_schema)
+        except ProviderError as exc:
+            if exc.rate_limited:
+                django_cache.set(
+                    _cooldown_key(name), True, PROVIDER_COOLDOWN_SECONDS
+                )
+                any_rate_limited = True
+            # unsupported or transient: fall through to the next provider.
+            continue
+
+    raise AssistantError(
+        BUSY_MESSAGE if any_rate_limited else UNREACHABLE_MESSAGE,
+        retryable=any_rate_limited,
+    )
 
 
 def ask(message, history):
@@ -210,19 +354,13 @@ def _ask(message, history):
         context=_context_scholarships(message),
     )
 
-    contents = [
-        {"role": turn["role"], "parts": [{"text": turn["text"]}]}
+    messages = [
+        {"role": turn["role"], "text": turn["text"]}
         for turn in history[-MAX_HISTORY_TURNS:]
     ]
-    contents.append({"role": "user", "parts": [{"text": message}]})
+    messages.append({"role": "user", "text": message})
 
-    reply = _generate(
-        {
-            "system_instruction": {"parts": [{"text": system}]},
-            "contents": contents,
-            "generationConfig": {"temperature": 0.4, "maxOutputTokens": 800},
-        }
-    )
+    reply = _generate(system, messages, temperature=0.4, max_tokens=800)
 
     if not reply:
         # Safety block or empty candidate - treat as a soft failure.
@@ -357,37 +495,22 @@ def extract_scholarship(text=None, pdf_bytes=None):
 
 def _extract_scholarship(text=None, pdf_bytes=None):
     if pdf_bytes is not None:
-        parts = [
+        messages = [
             {
-                "inline_data": {
-                    "mime_type": "application/pdf",
-                    "data": base64.b64encode(pdf_bytes).decode(),
-                }
-            },
-            {"text": "Extract the scholarship details from this document."},
+                "role": "user",
+                "pdf": pdf_bytes,
+                "text": "Extract the scholarship details from this document.",
+            }
         ]
     else:
-        parts = [{"text": text}]
+        messages = [{"role": "user", "text": text}]
 
     reply = _generate(
-        {
-            "system_instruction": {
-                "parts": [
-                    {
-                        "text": EXTRACT_PROMPT.format(
-                            today=f"{timezone.now().date():%Y-%m-%d}"
-                        )
-                    }
-                ]
-            },
-            "contents": [{"role": "user", "parts": parts}],
-            "generationConfig": {
-                "temperature": 0,
-                "maxOutputTokens": 2000,
-                "responseMimeType": "application/json",
-                "responseSchema": EXTRACT_SCHEMA,
-            },
-        }
+        EXTRACT_PROMPT.format(today=f"{timezone.now().date():%Y-%m-%d}"),
+        messages,
+        temperature=0,
+        max_tokens=2000,
+        json_schema=EXTRACT_SCHEMA,
     )
 
     try:
@@ -509,28 +632,20 @@ def _personalized_assessment(answers):
     )
 
     reply = _generate(
-        {
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [
-                        {
-                            "text": ASSESSMENT_PROMPT.format(
-                                answers=answer_lines,
-                                today=f"{timezone.now().date():%d %B %Y}",
-                                rows=rows,
-                            )
-                        }
-                    ],
-                }
-            ],
-            "generationConfig": {
-                "temperature": 0.5,
-                "maxOutputTokens": 1200,
-                "responseMimeType": "application/json",
-                "responseSchema": ASSESSMENT_SCHEMA,
-            },
-        }
+        None,
+        [
+            {
+                "role": "user",
+                "text": ASSESSMENT_PROMPT.format(
+                    answers=answer_lines,
+                    today=f"{timezone.now().date():%d %B %Y}",
+                    rows=rows,
+                ),
+            }
+        ],
+        temperature=0.5,
+        max_tokens=1200,
+        json_schema=ASSESSMENT_SCHEMA,
     )
 
     try:
@@ -651,19 +766,15 @@ def _find_possible_duplicate(fields, name):
 
     try:
         reply = _generate(
-            {
-                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-                "generationConfig": {
-                    "temperature": 0,
-                    "maxOutputTokens": 50,
-                    "responseMimeType": "application/json",
-                    "responseSchema": {
-                        "type": "OBJECT",
-                        "properties": {"match_id": {"type": "INTEGER"}},
-                        "required": ["match_id"],
-                    },
-                },
-            }
+            None,
+            [{"role": "user", "text": prompt}],
+            temperature=0,
+            max_tokens=50,
+            json_schema={
+                "type": "OBJECT",
+                "properties": {"match_id": {"type": "INTEGER"}},
+                "required": ["match_id"],
+            },
         )
         match_id = int(json.loads(reply).get("match_id") or 0)
     except (AssistantError, ValueError, TypeError, json.JSONDecodeError):

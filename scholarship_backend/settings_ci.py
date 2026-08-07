@@ -39,6 +39,7 @@ RESEND_API_KEY = ""
 # No AI in the e2e stack: the assistant widget hides, extraction reports
 # unavailable, and the post-time duplicate check is skipped.
 GEMINI_API_KEY = ""
+GROQ_API_KEY = ""
 
 # The Vite preview server the Playwright suite drives.
 CORS_ALLOWED_ORIGINS = [
