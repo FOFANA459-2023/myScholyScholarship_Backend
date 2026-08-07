@@ -27,6 +27,10 @@ CACHES = {
 # Fast, deterministic hashing so account-creation tests are not CPU bound.
 PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
 
+# Never talk to the real Gemini API from tests; individual tests opt in with
+# self.settings(GEMINI_API_KEY="test-key") around a mocked call.
+GEMINI_API_KEY = ""
+
 # Throttling would make repeated login/contact assertions flaky.
 REST_FRAMEWORK = {**REST_FRAMEWORK, "DEFAULT_THROTTLE_CLASSES": []}  # noqa: F405
 

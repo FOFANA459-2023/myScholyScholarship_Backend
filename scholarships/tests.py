@@ -999,3 +999,73 @@ class AssistantDuplicateTests(TestCase):
             response.data["duplicate"],
             {"name": "Some Award 2025", "status": "archived"},
         )
+
+
+class CreateDuplicateGuardTests(TestCase):
+    """The post-time duplicate safety net on admin create."""
+
+    URL = "/api/admin/scholarships/"
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        admin_user = User.objects.create_user("poster", password="x")
+        Admin.objects.create(user=admin_user)
+        self.client.force_authenticate(admin_user)
+        self.payload = {
+            "name": "Yenching Academy Scholarship 2027",
+            "description": "Fully funded graduate study at Peking University.",
+            "deadline": str(timezone.now().date() + timedelta(days=60)),
+            "host_country": "China",
+            "benefits": "Tuition\nStipend",
+            "eligibility": "Bachelor's degree",
+            "degree_level": "Masters",
+            "link": "https://example.com/apply",
+            "author": "myScholy",
+            "is_active": True,
+        }
+
+    def test_create_warns_then_posts_on_confirm(self):
+        from unittest.mock import patch
+
+        duplicate = {"name": "Yenching Academy Scholarship 2026", "status": "archived"}
+        with self.settings(GEMINI_API_KEY="test-key"):
+            with patch(
+                "scholarships.assistant.find_possible_duplicate",
+                return_value=duplicate,
+            ) as mock_check:
+                first = self.client.post(self.URL, self.payload, format="json")
+                self.assertEqual(first.status_code, 409)
+                self.assertEqual(first.data["duplicate"], duplicate)
+                self.assertEqual(Scholarship.objects.count(), 0)
+
+                second = self.client.post(
+                    self.URL,
+                    {**self.payload, "confirm_duplicate": True},
+                    format="json",
+                )
+                self.assertEqual(second.status_code, 201)
+                self.assertEqual(Scholarship.objects.count(), 1)
+                # The confirmed resubmit must not pay for a second AI call.
+                mock_check.assert_called_once()
+
+    def test_create_skips_check_without_key(self):
+        from unittest.mock import patch
+
+        with self.settings(GEMINI_API_KEY=""):
+            with patch(
+                "scholarships.assistant.find_possible_duplicate"
+            ) as mock_check:
+                response = self.client.post(self.URL, self.payload, format="json")
+        self.assertEqual(response.status_code, 201)
+        mock_check.assert_not_called()
+
+    def test_create_proceeds_when_no_duplicate_found(self):
+        from unittest.mock import patch
+
+        with self.settings(GEMINI_API_KEY="test-key"):
+            with patch(
+                "scholarships.assistant.find_possible_duplicate", return_value=None
+            ):
+                response = self.client.post(self.URL, self.payload, format="json")
+        self.assertEqual(response.status_code, 201)

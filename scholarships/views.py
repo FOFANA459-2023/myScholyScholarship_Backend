@@ -537,6 +537,30 @@ def admin_scholarships(request):
         data=request.data, context={"today": timezone.now().date()}
     )
     if serializer.is_valid():
+        # Post-time duplicate safety net: warn once (409) and require an
+        # explicit confirm_duplicate=true resubmit to post anyway. Advisory -
+        # no key, no candidates or a provider hiccup all fall through to a
+        # normal save.
+        if settings.GEMINI_API_KEY and not request.data.get("confirm_duplicate"):
+            try:
+                duplicate = assistant.find_possible_duplicate(
+                    serializer.validated_data
+                )
+            except Exception:
+                logger.exception("Duplicate check failed on create")
+                duplicate = None
+            if duplicate:
+                return Response(
+                    {
+                        "error": (
+                            "This scholarship likely already exists in the "
+                            f"{'archive' if duplicate['status'] == 'archived' else 'live board'}"
+                            f" as \"{duplicate['name']}\"."
+                        ),
+                        "duplicate": duplicate,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
         serializer.save()
         return Response(serializer.data, status=status.HTTP_201_CREATED)
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
