@@ -9,8 +9,13 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Load .env from BASE_DIR, falling back to the project root.
-if not load_dotenv(BASE_DIR / ".env", override=True):
-    load_dotenv(BASE_DIR.parent / ".env", override=True)
+#
+# override=False so a real environment variable always beats the file. The
+# file used to win, which meant a deployment could not correct a setting
+# without editing the file itself - a host whose .env said DJANGO_DEBUG=True
+# stayed in debug no matter what its dashboard was configured to say.
+if not load_dotenv(BASE_DIR / ".env", override=False):
+    load_dotenv(BASE_DIR.parent / ".env", override=False)
 
 
 def env_bool(name, default=False):

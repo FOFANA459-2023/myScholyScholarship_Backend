@@ -1453,6 +1453,26 @@ class SecureDefaultsTests(TestCase):
             self._reload_settings_with_env({"DJANGO_DEBUG": "True"}).DEBUG
         )
 
+    def test_environment_beats_the_dotenv_file(self):
+        """A deployed host must be able to correct a setting from its own
+        environment. With override=True the .env file won instead, so a
+        server whose file said DJANGO_DEBUG=True stayed in debug no matter
+        what its platform configuration said."""
+        import importlib
+
+        from scholarship_backend import settings as settings_module
+
+        with mock.patch("dotenv.load_dotenv", return_value=True) as loader:
+            with mock.patch.dict(os.environ, {}, clear=True):
+                importlib.reload(settings_module)
+
+        self.assertTrue(loader.call_args_list, "settings.py must load .env")
+        for call in loader.call_args_list:
+            self.assertFalse(
+                call.kwargs.get("override", False),
+                "load_dotenv must not override real environment variables",
+            )
+
     def test_production_hardening_follows_debug(self):
         """With debug off the security block must engage on its own."""
         settings_module = self._reload_settings_with_env({})

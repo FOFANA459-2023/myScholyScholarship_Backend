@@ -1,9 +1,9 @@
 """Test settings.
 
-The main settings module calls ``load_dotenv(override=True)``, so shell
-environment variables cannot redirect the database. Tests therefore import the
-real settings and override afterwards, which keeps the suite off the Supabase
-instance entirely.
+Everything the suite depends on is pinned here rather than inherited, so the
+result never varies with the machine it runs on: the database is redirected to
+in-memory sqlite (the suite must never touch Supabase), and the values the
+production hardening block would set are overridden below.
 
 Run with:  python manage.py test --settings=scholarship_backend.settings_test
 """
