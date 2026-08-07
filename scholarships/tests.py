@@ -910,3 +910,92 @@ class AssistantExtractSourceTests(TestCase):
         self.assertIn("Fully & truly funded.", text)
         self.assertNotIn("alert", text)
         self.assertNotIn("color", text)
+
+
+class AssistantDuplicateTests(TestCase):
+    """Advisory duplicate detection for extracted scholarships."""
+
+    def setUp(self):
+        cache.clear()
+
+    def test_no_candidates_skips_the_model_entirely(self):
+        from unittest.mock import patch
+
+        from .assistant import find_possible_duplicate
+
+        with patch("scholarships.assistant._generate") as mock_generate:
+            result = find_possible_duplicate({"name": "Totally Unseen Award"})
+        self.assertIsNone(result)
+        mock_generate.assert_not_called()
+
+    def test_reports_archived_match(self):
+        from unittest.mock import patch
+
+        from .assistant import find_possible_duplicate
+
+        row = make_scholarship(
+            name="Yenching Academy Scholarship 2025",
+            deadline=timezone.now().date() - timedelta(days=100),
+        )
+        with patch(
+            "scholarships.assistant._generate",
+            return_value=f'{{"match_id": {row.pk}}}',
+        ):
+            result = find_possible_duplicate(
+                {"name": "Yenching Academy Scholarship 2026", "host_country": "China"}
+            )
+        self.assertEqual(result, {"name": row.name, "status": "archived"})
+
+    def test_reports_live_match(self):
+        from unittest.mock import patch
+
+        from .assistant import find_possible_duplicate
+
+        row = make_scholarship(name="Yenching Academy Scholarship")
+        with patch(
+            "scholarships.assistant._generate",
+            return_value=f'{{"match_id": {row.pk}}}',
+        ):
+            result = find_possible_duplicate({"name": "Yenching Academy Scholarship"})
+        self.assertEqual(result, {"name": row.name, "status": "live"})
+
+    def test_model_failure_returns_none(self):
+        from unittest.mock import patch
+
+        from .assistant import AssistantError, find_possible_duplicate
+
+        make_scholarship(name="Yenching Academy Scholarship")
+        with patch(
+            "scholarships.assistant._generate",
+            side_effect=AssistantError("down"),
+        ):
+            result = find_possible_duplicate({"name": "Yenching Academy Scholarship"})
+        self.assertIsNone(result)
+
+    def test_extraction_response_carries_duplicate(self):
+        from unittest.mock import patch
+
+        client = APIClient()
+        admin_user = User.objects.create_user("staff3", password="x")
+        Admin.objects.create(user=admin_user)
+        client.force_authenticate(admin_user)
+
+        with self.settings(GEMINI_API_KEY="test-key"):
+            with patch(
+                "scholarships.assistant.extract_scholarship",
+                return_value={"name": "Some Award"},
+            ):
+                with patch(
+                    "scholarships.assistant.find_possible_duplicate",
+                    return_value={"name": "Some Award 2025", "status": "archived"},
+                ):
+                    response = client.post(
+                        "/api/admin/assistant/extract-scholarship/",
+                        {"text": "A long enough announcement about the Some Award programme."},
+                        format="json",
+                    )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.data["duplicate"],
+            {"name": "Some Award 2025", "status": "archived"},
+        )

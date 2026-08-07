@@ -1214,7 +1214,15 @@ def assistant_extract_scholarship(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    response = Response({"fields": fields})
+    # Advisory only: warn when the board (live or archive) already has this
+    # scholarship, but never let the check break a successful extraction.
+    try:
+        duplicate = assistant.find_possible_duplicate(fields)
+    except Exception:
+        logger.exception("Duplicate check failed")
+        duplicate = None
+
+    response = Response({"fields": fields, "duplicate": duplicate})
     response["Cache-Control"] = "private, no-store"
     return response
 

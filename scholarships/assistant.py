@@ -344,3 +344,103 @@ def extract_scholarship(text=None, pdf_bytes=None):
     return {
         field: str(data.get(field) or "").strip() for field in EXTRACT_FIELDS
     }
+
+
+# Generic words that would match half the board; only distinctive name words
+# should select duplicate candidates.
+DUPLICATE_STOPWORDS = {
+    "scholarship",
+    "scholarships",
+    "fellowship",
+    "fellowships",
+    "programme",
+    "program",
+    "award",
+    "awards",
+    "grant",
+    "grants",
+    "international",
+    "university",
+    "college",
+    "academy",
+    "foundation",
+    "fully",
+    "funded",
+    "study",
+    "students",
+}
+
+
+def find_possible_duplicate(fields):
+    """Advisory duplicate check for a freshly extracted scholarship.
+
+    Cheap by construction: a DB query on distinctive name words picks at most
+    five candidates, and only when candidates exist does one small Gemini call
+    (a few hundred tokens, ~50 output tokens) decide whether any is the same
+    scholarship. Returns {'name', 'status': 'live'|'archived'} or None; any
+    failure returns None - this must never break extraction itself.
+    """
+    name = (fields.get("name") or "").strip()
+    if not name:
+        return None
+
+    words = [w.strip(".,()'\"") for w in name.split()]
+    words = [
+        w
+        for w in words
+        if len(w) >= 4 and w.lower() not in DUPLICATE_STOPWORDS and not w.isdigit()
+    ]
+    if not words:
+        return None
+
+    from django.db.models import Q
+
+    query = Q()
+    for word in words[:6]:
+        query |= Q(name__icontains=word)
+    candidates = list(Scholarship.objects.filter(query).order_by("-created_at")[:5])
+    if not candidates:
+        return None
+
+    new_row = " | ".join(
+        f"{key}: {fields.get(key) or '-'}"
+        for key in ("name", "host_country", "degree_level", "deadline", "link")
+    )
+    existing_rows = "\n".join(
+        f"id {row.pk}: {row.name} | {row.host_country} | {row.degree_level}"
+        f" | deadline {row.deadline}"
+        for row in candidates
+    )
+    prompt = (
+        "You check a scholarship board for duplicates. Is the NEW scholarship "
+        "the same scholarship as any EXISTING row? A different year or cohort "
+        "of the same scholarship counts as the same. Reply with the matching "
+        "row's id, or 0 if none match.\n\n"
+        f"NEW: {new_row}\n\nEXISTING:\n{existing_rows}"
+    )
+
+    try:
+        reply = _generate(
+            {
+                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "temperature": 0,
+                    "maxOutputTokens": 50,
+                    "responseMimeType": "application/json",
+                    "responseSchema": {
+                        "type": "OBJECT",
+                        "properties": {"match_id": {"type": "INTEGER"}},
+                        "required": ["match_id"],
+                    },
+                },
+            }
+        )
+        match_id = int(json.loads(reply).get("match_id") or 0)
+    except (AssistantError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+    for row in candidates:
+        if row.pk == match_id:
+            is_live = row.is_active and row.deadline >= timezone.now().date()
+            return {"name": row.name, "status": "live" if is_live else "archived"}
+    return None
