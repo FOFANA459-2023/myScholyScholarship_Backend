@@ -17,6 +17,16 @@ from .settings import BASE_DIR, REST_FRAMEWORK
 DEBUG = True
 ALLOWED_HOSTS = ["*"]
 
+# settings.py evaluates its hardening block against the DEBUG value it derived
+# from the environment, which on a fresh CI checkout (no .env) is False. That
+# leaves SECURE_SSL_REDIRECT on even though DEBUG is overridden to True above,
+# and Playwright drives this stack over plain http://localhost - every request
+# would answer 301. Pin the values the local stack needs.
+SECURE_SSL_REDIRECT = False
+SECURE_HSTS_SECONDS = 0
+SESSION_COOKIE_SECURE = False
+CSRF_COOKIE_SECURE = False
+
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",

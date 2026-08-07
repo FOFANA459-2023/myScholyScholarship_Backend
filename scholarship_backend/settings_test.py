@@ -10,6 +10,15 @@ Run with:  python manage.py test --settings=scholarship_backend.settings_test
 
 from .settings import *  # noqa: F401,F403
 
+# Pinned explicitly rather than inherited: DEBUG follows DJANGO_DEBUG, which
+# is absent on CI but present in a developer's .env, so leaving these implicit
+# made the suite behave differently depending on whether a .env file existed.
+# With DEBUG off the production hardening block turns SECURE_SSL_REDIRECT on,
+# and the test client speaks http:// - every request would answer 301.
+DEBUG = False
+SECURE_SSL_REDIRECT = False
+SECURE_HSTS_SECONDS = 0
+
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
