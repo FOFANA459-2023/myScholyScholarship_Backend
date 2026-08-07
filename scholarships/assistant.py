@@ -11,9 +11,15 @@ them. No user-identifying data is ever sent to the provider - only the
 visitor's question text and public scholarship rows.
 """
 
+import base64
+import html
+import ipaddress
 import json
 import logging
+import re
+import socket
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from django.conf import settings
@@ -207,8 +213,11 @@ string for it.
 
 Field rules:
 - name: the scholarship's official name/title.
-- description: 2-4 sentences summarising what the scholarship is and who it is
-  for, written from the announcement's own information.
+- description: a thorough description drawn from the announcement's own
+  information - at least 4-5 full sentences whenever the source provides
+  enough material. Cover what the scholarship is, who offers it, who it is
+  for, where the study takes place and what makes it notable. Do not shorten
+  a rich announcement into a summary; preserve its substance.
 - deadline: the application deadline as YYYY-MM-DD. Empty if no full date is
   given. Today is {today} - use it only to resolve which year a stated
   deadline like "15 March" falls in (never as the deadline itself).
@@ -231,12 +240,77 @@ EXTRACT_SCHEMA = {
 }
 
 
-def extract_scholarship(text):
-    """Extract posting-form fields from pasted announcement text.
+MAX_FETCH_BYTES = 8 * 1024 * 1024  # 8 MB cap for fetched pages/PDFs
 
-    Returns a dict with every EXTRACT_FIELDS key, values '' when the text does
-    not contain that piece of information.
+
+def _assert_public_host(url):
+    """Refuse URLs that resolve to private/internal addresses (SSRF guard)."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise AssistantError("Enter a full http(s) link to the scholarship page.")
+    try:
+        infos = socket.getaddrinfo(parsed.hostname, None)
+    except socket.gaierror as exc:
+        raise AssistantError("That address could not be found.") from exc
+    for info in infos:
+        address = ipaddress.ip_address(info[4][0])
+        if not address.is_global:
+            raise AssistantError("That address cannot be fetched.")
+
+
+def fetch_url(url):
+    """Download a scholarship page. Returns ('pdf', bytes) or ('text', str)."""
+    _assert_public_host(url)
+
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "Mozilla/5.0 (MyScholy admin helper)"}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            content_type = (response.headers.get("Content-Type") or "").lower()
+            body = response.read(MAX_FETCH_BYTES)
+    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+        raise AssistantError(
+            "That page could not be fetched. Copy the text and paste it instead."
+        ) from exc
+
+    if "pdf" in content_type or body[:5] == b"%PDF-":
+        return "pdf", body
+    return "text", _html_to_text(body.decode("utf-8", errors="replace"))
+
+
+def _html_to_text(markup):
+    """Crude but dependency-free HTML -> text for the extraction prompt."""
+    markup = re.sub(
+        r"<(script|style|noscript)\b.*?</\1>", " ", markup, flags=re.S | re.I
+    )
+    markup = re.sub(r"<br\s*/?>|</p>|</div>|</li>|</h[1-6]>", "\n", markup, flags=re.I)
+    text = re.sub(r"<[^>]+>", " ", markup)
+    text = html.unescape(text)
+    text = re.sub(r"[ \t\r\f\v]+", " ", text)
+    return re.sub(r"\n\s*\n+", "\n\n", text).strip()
+
+
+def extract_scholarship(text=None, pdf_bytes=None):
+    """Extract posting-form fields from pasted text or an uploaded PDF.
+
+    Returns a dict with every EXTRACT_FIELDS key, values '' when the source
+    does not contain that piece of information. PDFs go to the model as-is
+    (Gemini reads them natively, scanned pages included).
     """
+    if pdf_bytes is not None:
+        parts = [
+            {
+                "inline_data": {
+                    "mime_type": "application/pdf",
+                    "data": base64.b64encode(pdf_bytes).decode(),
+                }
+            },
+            {"text": "Extract the scholarship details from this document."},
+        ]
+    else:
+        parts = [{"text": text}]
+
     reply = _generate(
         {
             "system_instruction": {
@@ -248,7 +322,7 @@ def extract_scholarship(text):
                     }
                 ]
             },
-            "contents": [{"role": "user", "parts": [{"text": text}]}],
+            "contents": [{"role": "user", "parts": parts}],
             "generationConfig": {
                 "temperature": 0,
                 "maxOutputTokens": 2000,

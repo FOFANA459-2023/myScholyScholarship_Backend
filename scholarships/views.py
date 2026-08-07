@@ -1170,20 +1170,48 @@ def assistant_extract_scholarship(request):
             status=status.HTTP_503_SERVICE_UNAVAILABLE,
         )
 
+    pdf = request.FILES.get("pdf")
+    url = request.data.get("url")
     text = request.data.get("text")
-    if not isinstance(text, str) or len(text.strip()) < 40:
-        return Response(
-            {"error": "Paste the scholarship announcement text first (at least a few sentences)."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    text = text.strip()[:20000]
 
     try:
-        fields = assistant.extract_scholarship(text)
+        if pdf is not None:
+            if pdf.size > 10 * 1024 * 1024:
+                return Response(
+                    {"error": "PDFs up to 10 MB are supported."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            pdf_bytes = pdf.read()
+            if pdf_bytes[:5] != b"%PDF-":
+                return Response(
+                    {"error": "That file does not look like a PDF."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            fields = assistant.extract_scholarship(pdf_bytes=pdf_bytes)
+        elif isinstance(url, str) and url.strip():
+            kind, content = assistant.fetch_url(url.strip())
+            if kind == "pdf":
+                fields = assistant.extract_scholarship(pdf_bytes=content)
+            else:
+                if len(content) < 40:
+                    return Response(
+                        {"error": "That page has no readable text. Copy the text and paste it instead."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                fields = assistant.extract_scholarship(text=content[:20000])
+        elif isinstance(text, str) and len(text.strip()) >= 40:
+            fields = assistant.extract_scholarship(text=text.strip()[:20000])
+        else:
+            return Response(
+                {"error": "Paste the announcement text (at least a few sentences), a link, or a PDF first."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
     except assistant.AssistantError as exc:
+        # Bad/unreachable/private URLs are caller errors; provider failures
+        # (from _generate) also land here and read fine as a 400 message.
         return Response(
             {"error": str(exc)},
-            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            status=status.HTTP_400_BAD_REQUEST,
         )
 
     response = Response({"fields": fields})

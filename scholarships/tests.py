@@ -832,3 +832,81 @@ class AssistantExtractTests(TestCase):
         self.assertEqual(fields["name"], "Example Fellowship")
         self.assertEqual(fields["deadline"], "")
         self.assertEqual(fields["host_country"], "Germany")
+
+
+class AssistantExtractSourceTests(TestCase):
+    """URL and PDF sources for the admin extraction endpoint."""
+
+    URL = "/api/admin/assistant/extract-scholarship/"
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        admin_user = User.objects.create_user("staff2", password="x")
+        Admin.objects.create(user=admin_user)
+        self.client.force_authenticate(admin_user)
+
+    def test_url_must_be_public_http(self):
+        with self.settings(GEMINI_API_KEY="test-key"):
+            response = self.client.post(
+                self.URL, {"url": "http://127.0.0.1/internal"}, format="json"
+            )
+        self.assertEqual(response.status_code, 400)
+
+    def test_url_fetch_feeds_extraction(self):
+        from unittest.mock import patch
+
+        with self.settings(GEMINI_API_KEY="test-key"):
+            with patch(
+                "scholarships.assistant.fetch_url",
+                return_value=("text", "A long announcement about a fully funded award " * 3),
+            ):
+                with patch(
+                    "scholarships.assistant.extract_scholarship",
+                    return_value={"name": "From URL"},
+                ) as mock_extract:
+                    response = self.client.post(
+                        self.URL, {"url": "https://example.org/award"}, format="json"
+                    )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["fields"]["name"], "From URL")
+        self.assertIn("text", mock_extract.call_args.kwargs)
+
+    def test_pdf_upload_feeds_extraction(self):
+        from unittest.mock import patch
+
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        pdf = SimpleUploadedFile(
+            "award.pdf", b"%PDF-1.4 fake body", content_type="application/pdf"
+        )
+        with self.settings(GEMINI_API_KEY="test-key"):
+            with patch(
+                "scholarships.assistant.extract_scholarship",
+                return_value={"name": "From PDF"},
+            ) as mock_extract:
+                response = self.client.post(self.URL, {"pdf": pdf}, format="multipart")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["fields"]["name"], "From PDF")
+        self.assertIn("pdf_bytes", mock_extract.call_args.kwargs)
+
+    def test_non_pdf_upload_rejected(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        fake = SimpleUploadedFile("award.pdf", b"just text", content_type="application/pdf")
+        with self.settings(GEMINI_API_KEY="test-key"):
+            response = self.client.post(self.URL, {"pdf": fake}, format="multipart")
+        self.assertEqual(response.status_code, 400)
+
+    def test_html_to_text_strips_markup(self):
+        from .assistant import _html_to_text
+
+        text = _html_to_text(
+            "<html><head><style>p{color:red}</style></head>"
+            "<body><h1>Award</h1><p>Fully &amp; truly funded.</p>"
+            "<script>alert(1)</script></body></html>"
+        )
+        self.assertIn("Award", text)
+        self.assertIn("Fully & truly funded.", text)
+        self.assertNotIn("alert", text)
+        self.assertNotIn("color", text)
