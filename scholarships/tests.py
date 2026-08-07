@@ -1069,3 +1069,78 @@ class CreateDuplicateGuardTests(TestCase):
             ):
                 response = self.client.post(self.URL, self.payload, format="json")
         self.assertEqual(response.status_code, 201)
+
+
+class AssistantAssessmentTests(TestCase):
+    """The personalized assessment endpoint."""
+
+    URL = "/api/assistant/assessment/"
+    ANSWERS = {
+        "age": "18plus",
+        "level": "graduate",
+        "stage": "exploring",
+        "essay": "draft",
+        "cv": "yes",
+        "region": "Asia",
+    }
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+
+    def test_disabled_without_key(self):
+        with self.settings(GEMINI_API_KEY=""):
+            response = self.client.post(
+                self.URL, {"answers": self.ANSWERS}, format="json"
+            )
+        self.assertEqual(response.status_code, 503)
+
+    def test_rejects_missing_answers(self):
+        with self.settings(GEMINI_API_KEY="test-key"):
+            response = self.client.post(self.URL, {"answers": {}}, format="json")
+        self.assertEqual(response.status_code, 400)
+
+    def test_returns_personalized_result(self):
+        from unittest.mock import patch
+
+        payload = {
+            "headline": "You're closer than you think",
+            "summary": "A personalized paragraph.",
+            "next_steps": ["Do one thing", "Then another"],
+            "scholarships": [
+                {
+                    "id": 1,
+                    "name": "Yenching",
+                    "host_country": "China",
+                    "degree_level": "Masters",
+                    "deadline": "16 Sep 2026",
+                }
+            ],
+        }
+        with self.settings(GEMINI_API_KEY="test-key"):
+            with patch(
+                "scholarships.assistant.personalized_assessment", return_value=payload
+            ) as mock_assess:
+                response = self.client.post(
+                    self.URL, {"answers": self.ANSWERS}, format="json"
+                )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, payload)
+        self.assertEqual(response["Cache-Control"], "private, no-store")
+        mock_assess.assert_called_once()
+
+    def test_personalized_assessment_resolves_real_rows(self):
+        from unittest.mock import patch
+
+        row = make_scholarship(name="Asia Masters Award", degree_level="Masters")
+        model_reply = (
+            '{"headline": "h", "summary": "s", "next_steps": ["a"],'
+            f' "scholarship_ids": [{row.pk}, 999999]}}'
+        )
+        from .assistant import personalized_assessment
+
+        with patch("scholarships.assistant._generate", return_value=model_reply):
+            result = personalized_assessment({"level": "graduate", "region": "Asia"})
+        self.assertEqual(len(result["scholarships"]), 1)
+        self.assertEqual(result["scholarships"][0]["name"], "Asia Masters Award")
+        self.assertEqual(result["scholarships"][0]["id"], row.pk)

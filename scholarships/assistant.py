@@ -346,6 +346,151 @@ def extract_scholarship(text=None, pdf_bytes=None):
     }
 
 
+# ---------------------------------------------------------------------------
+# Public: personalized assessment result
+# ---------------------------------------------------------------------------
+
+ASSESSMENT_KEYS = ("age", "level", "stage", "essay", "cv", "region")
+
+ASSESSMENT_LEVEL_KEYWORDS = {
+    "undergraduate": ("bachelor", "undergrad"),
+    "graduate": ("master", "graduate"),
+    "postgraduate": ("phd", "doctor", "postdoc", "fellow", "master"),
+}
+
+ASSESSMENT_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "headline": {"type": "STRING"},
+        "summary": {"type": "STRING"},
+        "next_steps": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "scholarship_ids": {"type": "ARRAY", "items": {"type": "INTEGER"}},
+    },
+    "required": ["headline", "summary", "next_steps", "scholarship_ids"],
+}
+
+ASSESSMENT_PROMPT = """\
+You are myScholy's friendly assessment coach. A visitor answered the site's
+fit-assessment quiz; write them a personalized result.
+
+Their answers (level = the study level they are applying for; region = WHERE
+THEY WANT TO STUDY, not where they live; stage = how far along they are;
+essay/cv = the state of their application materials):
+{answers}
+
+Today's date: {today}.
+
+Live scholarships currently on the myScholy board (id | name | country |
+degree level | deadline):
+{rows}
+
+Produce:
+- headline: a short, encouraging title tailored to their situation.
+- summary: 3-5 sentences speaking directly to them ("you"), reflecting their
+  study level, how far along they are, and their essay/CV answers. Mention
+  that myScholy Consulting (coming soon) can support the steps they are
+  weakest on. Plain text, no markdown.
+- next_steps: 3-5 concrete, personalized actions in priority order, phrased
+  as imperatives. If deadlines are close for them, order accordingly.
+- scholarship_ids: ids of up to 5 listings from the table above that fit
+  their study level, best first. Prefer listings in their preferred region,
+  but when that region has none, include the best fits from other regions -
+  students routinely consider them. Be generous: include a listing unless its
+  degree level clearly does not match. Only ids from the table - never
+  invent. Empty list only when truly nothing fits.
+"""
+
+
+def personalized_assessment(answers):
+    """Personalized quiz result grounded with matching live scholarships.
+
+    ``answers`` is a dict of quiz answers (ASSESSMENT_KEYS). Returns
+    {'headline', 'summary', 'next_steps', 'scholarships'} where scholarships
+    are real rows resolved from the model's picks.
+    """
+    keywords = ASSESSMENT_LEVEL_KEYWORDS.get(answers.get("level"), ())
+    live = Scholarship.objects.active().open_for_application().order_by("deadline")
+    if keywords:
+        from django.db.models import Q
+
+        query = Q()
+        for keyword in keywords:
+            query |= Q(degree_level__icontains=keyword)
+        matched = list(live.filter(query)[:20])
+        # A sparse board should still produce recommendations to consider.
+        if len(matched) < 5:
+            seen = {row.pk for row in matched}
+            matched += [row for row in live[:20] if row.pk not in seen][: 20 - len(matched)]
+    else:
+        matched = list(live[:20])
+
+    rows = "\n".join(
+        f"{row.pk} | {row.name} | {row.host_country} | {row.degree_level}"
+        f" | {row.deadline}"
+        for row in matched
+    ) or "(the board has no live scholarships right now)"
+
+    answer_lines = "\n".join(
+        f"- {key}: {answers.get(key) or '-'}" for key in ASSESSMENT_KEYS
+    )
+
+    reply = _generate(
+        {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "text": ASSESSMENT_PROMPT.format(
+                                answers=answer_lines,
+                                today=f"{timezone.now().date():%d %B %Y}",
+                                rows=rows,
+                            )
+                        }
+                    ],
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.5,
+                "maxOutputTokens": 1200,
+                "responseMimeType": "application/json",
+                "responseSchema": ASSESSMENT_SCHEMA,
+            },
+        }
+    )
+
+    try:
+        data = json.loads(reply)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise AssistantError(
+            "The personalized result could not be generated right now."
+        ) from exc
+
+    by_id = {row.pk: row for row in matched}
+    picks = []
+    for pk in data.get("scholarship_ids") or []:
+        row = by_id.get(pk)
+        if row:
+            picks.append(
+                {
+                    "id": row.pk,
+                    "name": row.name,
+                    "host_country": row.host_country,
+                    "degree_level": row.degree_level,
+                    "deadline": f"{row.deadline:%d %b %Y}",
+                }
+            )
+
+    return {
+        "headline": str(data.get("headline") or "").strip() or "Your personalized plan",
+        "summary": str(data.get("summary") or "").strip(),
+        "next_steps": [
+            str(step).strip() for step in (data.get("next_steps") or []) if str(step).strip()
+        ][:5],
+        "scholarships": picks[:5],
+    }
+
+
 # Generic words that would match half the board; only distinctive name words
 # should select duplicate candidates.
 DUPLICATE_STOPWORDS = {

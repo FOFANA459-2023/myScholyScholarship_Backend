@@ -1180,6 +1180,52 @@ def assistant_chat(request):
 
 
 @api_view(["POST"])
+@permission_classes([AllowAny])
+@throttle_classes([AssistantThrottle])
+def assistant_assessment(request):
+    """Personalized fit-assessment result, grounded with live scholarships.
+
+    Public like the quiz itself; the same scoped throttle as the chat bot
+    protects the provider quota. Answers are quiz option values only - no
+    personal data reaches the provider.
+    """
+    if not settings.GEMINI_API_KEY:
+        return Response(
+            {"error": "Personalized results are not available right now."},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    answers = request.data.get("answers")
+    if not isinstance(answers, dict):
+        return Response(
+            {"error": "Complete the assessment first."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    cleaned = {}
+    for key in assistant.ASSESSMENT_KEYS:
+        value = answers.get(key)
+        if isinstance(value, str) and value.strip():
+            cleaned[key] = value.strip()[:40]
+    if not cleaned.get("level"):
+        return Response(
+            {"error": "Complete the assessment first."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        result = assistant.personalized_assessment(cleaned)
+    except assistant.AssistantError as exc:
+        return Response(
+            {"error": str(exc)},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    response = Response(result)
+    response["Cache-Control"] = "private, no-store"
+    return response
+
+
+@api_view(["POST"])
 @permission_classes([IsAdmin])
 def assistant_extract_scholarship(request):
     """Admin helper: extract posting-form fields from pasted announcement text.
