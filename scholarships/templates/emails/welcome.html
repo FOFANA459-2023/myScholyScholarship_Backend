@@ -43,14 +43,21 @@
                       cellpadding="0"
                       cellspacing="0"
                       role="presentation"
-                      style="background-color:#0c4a6e;padding:22px 32px;border-bottom:3px solid #eab308">
+                      style="background-color:#dfe3e6;padding:26px 32px 22px;text-align:center;border-bottom:3px solid #eab308">
                       <tbody>
                         <tr>
                           <td>
-                            <p
-                              style="font-size:22px;line-height:24px;color:#ffffff;font-weight:700;letter-spacing:-0.02em;margin:0;margin-top:0;margin-bottom:0;margin-left:0;margin-right:0">
-                              My<span style="color:#eab308">Scholy</span>
-                            </p>
+                            <a
+                              href="{{ frontend_url }}"
+                              style="color:#067df7;text-decoration-line:none"
+                              target="_blank"
+                              ><img
+                                alt="MyScholy"
+                                height="111"
+                                src="{{ frontend_url }}/email-logo.png"
+                                style="display:block;outline:none;border:none;text-decoration:none;margin:0 auto"
+                                width="118"
+                            /></a>
                           </td>
                         </tr>
                       </tbody>
@@ -67,17 +74,112 @@
                         <tr>
                           <td>
                             <h1
-                              style="color:#0f172a;font-size:20px;font-weight:700;line-height:28px;margin:0 0 16px">
+                              style="color:#0f172a;font-size:22px;font-weight:700;line-height:30px;margin:0 0 16px">
                               Welcome to MyScholy,
-                              <!-- -->{{ first_name }}<!-- -->!
+                              <!-- -->{{ first_name }}<!-- -->! 🎓
                             </h1>
                             <p
                               style="font-size:15px;line-height:24px;color:#334155;margin:0 0 16px;margin-top:0;margin-right:0;margin-bottom:16px;margin-left:0">
                               Your account is ready. MyScholy brings together
-                              scholarships from around the world so you can find
-                              the ones that fit you — by country, degree level
-                              and deadline — and never miss a closing date.
+                              fully funded scholarships from around the world so
+                              you can stop hunting across dozens of sites and
+                              start applying. Here is what you can do right now:
                             </p>
+                            <table
+                              align="center"
+                              width="100%"
+                              border="0"
+                              cellpadding="0"
+                              cellspacing="0"
+                              role="presentation"
+                              style="margin:4px 0 8px">
+                              <tbody>
+                                <tr>
+                                  <td>
+                                    <table
+                                      align="center"
+                                      width="100%"
+                                      border="0"
+                                      cellpadding="0"
+                                      cellspacing="0"
+                                      role="presentation">
+                                      <tbody style="width:100%">
+                                        <tr style="width:100%">
+                                          <td
+                                            data-id="__react-email-column"
+                                            style="color:#eab308;font-size:15px;font-weight:700;width:22px;vertical-align:top">
+                                            ✦
+                                          </td>
+                                          <td data-id="__react-email-column">
+                                            <p
+                                              style="font-size:15px;line-height:24px;color:#334155;margin:0 0 10px;margin-top:0;margin-right:0;margin-bottom:10px;margin-left:0">
+                                              <strong
+                                                >Search &amp; filter</strong
+                                              >
+                                              by host country, degree level and
+                                              deadline — instantly.
+                                            </p>
+                                          </td>
+                                        </tr>
+                                      </tbody>
+                                    </table>
+                                    <table
+                                      align="center"
+                                      width="100%"
+                                      border="0"
+                                      cellpadding="0"
+                                      cellspacing="0"
+                                      role="presentation">
+                                      <tbody style="width:100%">
+                                        <tr style="width:100%">
+                                          <td
+                                            data-id="__react-email-column"
+                                            style="color:#eab308;font-size:15px;font-weight:700;width:22px;vertical-align:top">
+                                            ✦
+                                          </td>
+                                          <td data-id="__react-email-column">
+                                            <p
+                                              style="font-size:15px;line-height:24px;color:#334155;margin:0 0 10px;margin-top:0;margin-right:0;margin-bottom:10px;margin-left:0">
+                                              <strong>Sort by deadline</strong>
+                                              so the most urgent opportunities
+                                              are always at the top.
+                                            </p>
+                                          </td>
+                                        </tr>
+                                      </tbody>
+                                    </table>
+                                    <table
+                                      align="center"
+                                      width="100%"
+                                      border="0"
+                                      cellpadding="0"
+                                      cellspacing="0"
+                                      role="presentation">
+                                      <tbody style="width:100%">
+                                        <tr style="width:100%">
+                                          <td
+                                            data-id="__react-email-column"
+                                            style="color:#eab308;font-size:15px;font-weight:700;width:22px;vertical-align:top">
+                                            ✦
+                                          </td>
+                                          <td data-id="__react-email-column">
+                                            <p
+                                              style="font-size:15px;line-height:24px;color:#334155;margin:0 0 10px;margin-top:0;margin-right:0;margin-bottom:10px;margin-left:0">
+                                              <strong
+                                                >Open the official
+                                                application</strong
+                                              >
+                                              straight from every listing — free
+                                              to browse, free to apply.
+                                            </p>
+                                          </td>
+                                        </tr>
+                                      </tbody>
+                                    </table>
+                                  </td>
+                                </tr>
+                              </tbody>
+                            </table>
                             <table
                               align="center"
                               width="100%"
@@ -91,28 +193,46 @@
                                   <td>
                                     <a
                                       href="{{ frontend_url }}/scholarships"
-                                      style="line-height:100%;text-decoration:none;display:inline-block;max-width:100%;mso-padding-alt:0px;background-color:#0c4a6e;border-radius:10px;color:#ffffff;font-size:15px;font-weight:600;padding:12px 28px;padding-top:12px;padding-right:28px;padding-bottom:12px;padding-left:28px"
+                                      style="line-height:100%;text-decoration:none;display:inline-block;max-width:100%;mso-padding-alt:0px;background-color:#0c4a6e;border-radius:10px;color:#ffffff;font-size:15px;font-weight:600;padding:13px 32px;padding-top:13px;padding-right:32px;padding-bottom:13px;padding-left:32px"
                                       target="_blank"
                                       ><span
-                                        ><!--[if mso]><i style="mso-font-width:466.6666666666667%;mso-text-raise:18" hidden>&#8202;&#8202;&#8202;</i><![endif]--></span
+                                        ><!--[if mso]><i style="mso-font-width:400%;mso-text-raise:19.5" hidden>&#8202;&#8202;&#8202;&#8202;</i><![endif]--></span
                                       ><span
-                                        style="max-width:100%;display:inline-block;line-height:120%;mso-padding-alt:0px;mso-text-raise:9px"
+                                        style="max-width:100%;display:inline-block;line-height:120%;mso-padding-alt:0px;mso-text-raise:9.75px"
                                         >Browse scholarships</span
                                       ><span
-                                        ><!--[if mso]><i style="mso-font-width:466.6666666666667%" hidden>&#8202;&#8202;&#8202;&#8203;</i><![endif]--></span
+                                        ><!--[if mso]><i style="mso-font-width:400%" hidden>&#8202;&#8202;&#8202;&#8202;&#8203;</i><![endif]--></span
                                       ></a
                                     >
                                   </td>
                                 </tr>
                               </tbody>
                             </table>
-                            <p
-                              style="font-size:15px;line-height:24px;color:#334155;margin:0 0 16px;margin-top:0;margin-right:0;margin-bottom:16px;margin-left:0">
-                              A quick tip to get the most out of MyScholy:
-                              filter by your target country and degree level
-                              first, then sort by deadline so the most urgent
-                              opportunities are always at the top.
-                            </p>
+                            <table
+                              align="center"
+                              width="100%"
+                              border="0"
+                              cellpadding="0"
+                              cellspacing="0"
+                              role="presentation"
+                              style="background-color:#f8fafc;border:1px solid #e2e8f0;border-left:4px solid #eab308;border-radius:10px;padding:14px 18px;margin:20px 0 0">
+                              <tbody>
+                                <tr>
+                                  <td>
+                                    <p
+                                      style="font-size:13px;line-height:20px;color:#64748b;margin:0;margin-top:0;margin-bottom:0;margin-left:0;margin-right:0">
+                                      <strong style="color:#334155"
+                                        >Tip:</strong
+                                      >
+                                      filter by your target country and degree
+                                      level first, then sort by deadline —
+                                      you&#x27;ll see the opportunities that
+                                      close soonest before anything else.
+                                    </p>
+                                  </td>
+                                </tr>
+                              </tbody>
+                            </table>
                             <hr
                               style="width:100%;border:none;border-top:1px solid #eaeaea;border-color:#e2e8f0;margin:24px 0" />
                             <p
@@ -132,10 +252,26 @@
                       cellpadding="0"
                       cellspacing="0"
                       role="presentation"
-                      style="padding:0 32px 28px">
+                      style="padding:0 32px 28px;text-align:center">
                       <tbody>
                         <tr>
                           <td>
+                            <p
+                              style="font-size:13px;line-height:20px;color:#64748b;margin:0 0 10px;margin-top:0;margin-right:0;margin-bottom:10px;margin-left:0">
+                              <a
+                                href="{{ frontend_url }}/scholarships"
+                                style="color:#64748b;text-decoration-line:none;text-decoration:underline"
+                                target="_blank"
+                                >Browse scholarships</a
+                              >
+                              ·
+                              <a
+                                href="{{ frontend_url }}/contact"
+                                style="color:#64748b;text-decoration-line:none;text-decoration:underline"
+                                target="_blank"
+                                >Contact us</a
+                              >
+                            </p>
                             <p
                               style="font-size:12px;line-height:18px;color:#94a3b8;margin:0 0 4px;margin-top:0;margin-right:0;margin-bottom:4px;margin-left:0">
                               ©

@@ -43,14 +43,21 @@
                       cellpadding="0"
                       cellspacing="0"
                       role="presentation"
-                      style="background-color:#0c4a6e;padding:22px 32px;border-bottom:3px solid #eab308">
+                      style="background-color:#dfe3e6;padding:26px 32px 22px;text-align:center;border-bottom:3px solid #eab308">
                       <tbody>
                         <tr>
                           <td>
-                            <p
-                              style="font-size:22px;line-height:24px;color:#ffffff;font-weight:700;letter-spacing:-0.02em;margin:0;margin-top:0;margin-bottom:0;margin-left:0;margin-right:0">
-                              My<span style="color:#eab308">Scholy</span>
-                            </p>
+                            <a
+                              href="{{ frontend_url }}"
+                              style="color:#067df7;text-decoration-line:none"
+                              target="_blank"
+                              ><img
+                                alt="MyScholy"
+                                height="111"
+                                src="{{ frontend_url }}/email-logo.png"
+                                style="display:block;outline:none;border:none;text-decoration:none;margin:0 auto"
+                                width="118"
+                            /></a>
                           </td>
                         </tr>
                       </tbody>
@@ -67,20 +74,9 @@
                         <tr>
                           <td>
                             <h1
-                              style="color:#0f172a;font-size:20px;font-weight:700;line-height:28px;margin:0 0 16px">
-                              New contact form message
+                              style="color:#0f172a;font-size:22px;font-weight:700;line-height:30px;margin:0 0 16px">
+                              📬 New contact form message
                             </h1>
-                            <p
-                              style="font-size:13px;line-height:20px;color:#64748b;margin:0 0 8px;margin-top:0;margin-right:0;margin-bottom:8px;margin-left:0">
-                              From:
-                              <strong style="color:#334155">{{ name }}</strong>
-                              <!-- -->&lt;<!-- -->{{ email }}<!-- -->&gt;
-                            </p>
-                            <p
-                              style="font-size:13px;line-height:20px;color:#64748b;margin:0 0 8px;margin-top:0;margin-right:0;margin-bottom:8px;margin-left:0">
-                              Received:
-                              <!-- -->{{ received_at }}
-                            </p>
                             <table
                               align="center"
                               width="100%"
@@ -88,7 +84,88 @@
                               cellpadding="0"
                               cellspacing="0"
                               role="presentation"
-                              style="background-color:#f8fafc;border:1px solid #e2e8f0;border-left:4px solid #eab308;border-radius:10px;padding:16px 20px;margin:20px 0">
+                              style="background-color:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px 18px;margin:0 0 20px">
+                              <tbody>
+                                <tr>
+                                  <td>
+                                    <table
+                                      align="center"
+                                      width="100%"
+                                      border="0"
+                                      cellpadding="0"
+                                      cellspacing="0"
+                                      role="presentation">
+                                      <tbody style="width:100%">
+                                        <tr style="width:100%">
+                                          <td
+                                            data-id="__react-email-column"
+                                            style="color:#64748b;font-size:12px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;width:92px;vertical-align:top;padding:3px 0">
+                                            From
+                                          </td>
+                                          <td
+                                            data-id="__react-email-column"
+                                            style="color:#334155;font-size:14px;line-height:20px;padding:3px 0">
+                                            <strong>{{ name }}</strong>
+                                          </td>
+                                        </tr>
+                                      </tbody>
+                                    </table>
+                                    <table
+                                      align="center"
+                                      width="100%"
+                                      border="0"
+                                      cellpadding="0"
+                                      cellspacing="0"
+                                      role="presentation">
+                                      <tbody style="width:100%">
+                                        <tr style="width:100%">
+                                          <td
+                                            data-id="__react-email-column"
+                                            style="color:#64748b;font-size:12px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;width:92px;vertical-align:top;padding:3px 0">
+                                            Email
+                                          </td>
+                                          <td
+                                            data-id="__react-email-column"
+                                            style="color:#334155;font-size:14px;line-height:20px;padding:3px 0">
+                                            {{ email }}
+                                          </td>
+                                        </tr>
+                                      </tbody>
+                                    </table>
+                                    <table
+                                      align="center"
+                                      width="100%"
+                                      border="0"
+                                      cellpadding="0"
+                                      cellspacing="0"
+                                      role="presentation">
+                                      <tbody style="width:100%">
+                                        <tr style="width:100%">
+                                          <td
+                                            data-id="__react-email-column"
+                                            style="color:#64748b;font-size:12px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;width:92px;vertical-align:top;padding:3px 0">
+                                            Received
+                                          </td>
+                                          <td
+                                            data-id="__react-email-column"
+                                            style="color:#334155;font-size:14px;line-height:20px;padding:3px 0">
+                                            {{ received_at }}
+                                          </td>
+                                        </tr>
+                                      </tbody>
+                                    </table>
+                                  </td>
+                                </tr>
+                              </tbody>
+                            </table>
+                            <table
+                              align="center"
+                              width="100%"
+                              border="0"
+                              cellpadding="0"
+                              cellspacing="0"
+                              role="presentation"
+                              style="background-color:#ffffff;border:1px solid #e2e8f0;border-left:4px solid #eab308;border-radius:10px;padding:16px 20px;margin:0 0 4px">
                               <tbody>
                                 <tr>
                                   <td>
@@ -118,10 +195,26 @@
                       cellpadding="0"
                       cellspacing="0"
                       role="presentation"
-                      style="padding:0 32px 28px">
+                      style="padding:0 32px 28px;text-align:center">
                       <tbody>
                         <tr>
                           <td>
+                            <p
+                              style="font-size:13px;line-height:20px;color:#64748b;margin:0 0 10px;margin-top:0;margin-right:0;margin-bottom:10px;margin-left:0">
+                              <a
+                                href="{{ frontend_url }}/scholarships"
+                                style="color:#64748b;text-decoration-line:none;text-decoration:underline"
+                                target="_blank"
+                                >Browse scholarships</a
+                              >
+                              ·
+                              <a
+                                href="{{ frontend_url }}/contact"
+                                style="color:#64748b;text-decoration-line:none;text-decoration:underline"
+                                target="_blank"
+                                >Contact us</a
+                              >
+                            </p>
                             <p
                               style="font-size:12px;line-height:18px;color:#94a3b8;margin:0 0 4px;margin-top:0;margin-right:0;margin-bottom:4px;margin-left:0">
                               ©
