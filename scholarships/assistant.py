@@ -392,12 +392,13 @@ Produce:
   weakest on. Plain text, no markdown.
 - next_steps: 3-5 concrete, personalized actions in priority order, phrased
   as imperatives. If deadlines are close for them, order accordingly.
-- scholarship_ids: ids of up to 5 listings from the table above that fit
-  their study level, best first. Prefer listings in their preferred region,
-  but when that region has none, include the best fits from other regions -
-  students routinely consider them. Be generous: include a listing unless its
-  degree level clearly does not match. Only ids from the table - never
-  invent. Empty list only when truly nothing fits.
+- scholarship_ids: ids of listings from the table above that fit their study
+  level, best first. When many fit, pick only the best 3 to 5 - the summary
+  should point them at the scholarships page for the rest. Prefer listings in
+  their preferred region, but when that region has none, include the best
+  fits from other regions - students routinely consider them. Be generous:
+  include a listing unless its degree level clearly does not match. Only ids
+  from the table - never invent. Empty list only when truly nothing fits.
 """
 
 

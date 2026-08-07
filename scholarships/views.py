@@ -68,6 +68,7 @@ from .serializers import (
     StudentSerializer,
     UserSerializer,
 )
+from .throttling import AssessmentQuotaThrottle, ChatQuotaThrottle
 
 # Always revalidate: a browser holding yesterday's list body must not keep
 # serving it after an admin reposts or archives something. The version-scoped
@@ -1127,7 +1128,7 @@ def assistant_status(request):
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
-@throttle_classes([AssistantThrottle])
+@throttle_classes([AssistantThrottle, ChatQuotaThrottle])
 def assistant_chat(request):
     """One turn of the popup assistant conversation.
 
@@ -1181,7 +1182,7 @@ def assistant_chat(request):
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
-@throttle_classes([AssistantThrottle])
+@throttle_classes([AssessmentQuotaThrottle])
 def assistant_assessment(request):
     """Personalized fit-assessment result, grounded with live scholarships.
 

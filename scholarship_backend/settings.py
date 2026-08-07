@@ -211,6 +211,13 @@ else:
 
 REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.AllowAny"],
+    # Behind Caddy (Oracle) / Render's proxy REMOTE_ADDR is the proxy, not the
+    # visitor. One trusted proxy means DRF reads the client IP our proxy
+    # appended to X-Forwarded-For - forged headers from clients cannot spoof
+    # another visitor's throttle bucket.
+    "NUM_PROXIES": 1,
+    # Friendly throttle messages ("check back in about N hours").
+    "EXCEPTION_HANDLER": "scholarships.exceptions.friendly_exception_handler",
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ],

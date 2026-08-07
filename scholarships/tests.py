@@ -1144,3 +1144,84 @@ class AssistantAssessmentTests(TestCase):
         self.assertEqual(len(result["scholarships"]), 1)
         self.assertEqual(result["scholarships"][0]["name"], "Asia Masters Award")
         self.assertEqual(result["scholarships"][0]["id"], row.pk)
+
+
+class AiQuotaThrottleTests(TestCase):
+    """The 20-hour rolling quotas on the AI endpoints."""
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+
+    def _post_assessment(self, client):
+        from unittest.mock import patch
+
+        payload = {
+            "headline": "h",
+            "summary": "s",
+            "next_steps": [],
+            "scholarships": [],
+        }
+        with self.settings(GEMINI_API_KEY="test-key"):
+            with patch(
+                "scholarships.assistant.personalized_assessment", return_value=payload
+            ):
+                return client.post(
+                    "/api/assistant/assessment/",
+                    {"answers": {"level": "graduate"}},
+                    format="json",
+                )
+
+    def test_anonymous_assessment_limited_to_one(self):
+        first = self._post_assessment(self.client)
+        self.assertEqual(first.status_code, 200)
+
+        second = self._post_assessment(self.client)
+        self.assertEqual(second.status_code, 429)
+        self.assertIn("check back", second.data["error"])
+        self.assertIn("logging in", second.data["error"])
+        self.assertIn("retry_after_seconds", second.data)
+        self.assertTrue(second.has_header("Retry-After"))
+
+    def test_logged_in_assessment_gets_five(self):
+        user = User.objects.create_user("quota-user", password="x")
+        self.client.force_authenticate(user)
+
+        for _ in range(5):
+            self.assertEqual(self._post_assessment(self.client).status_code, 200)
+
+        sixth = self._post_assessment(self.client)
+        self.assertEqual(sixth.status_code, 429)
+        self.assertIn("check back", sixth.data["error"])
+        # Logged-in users are not told to log in.
+        self.assertNotIn("logging in", sixth.data["error"])
+
+    def _post_chat(self, client):
+        from unittest.mock import patch
+
+        with self.settings(GEMINI_API_KEY="test-key"):
+            with patch("scholarships.assistant.ask", return_value="reply"):
+                return client.post(
+                    "/api/assistant/chat/", {"message": "hello"}, format="json"
+                )
+
+    def test_anonymous_chat_limited_to_three(self):
+        for _ in range(3):
+            self.assertEqual(self._post_chat(self.client).status_code, 200)
+        fourth = self._post_chat(self.client)
+        self.assertEqual(fourth.status_code, 429)
+        self.assertIn("check back", fourth.data["error"])
+
+    def test_logged_in_chat_gets_ten(self):
+        user = User.objects.create_user("chat-user", password="x")
+        self.client.force_authenticate(user)
+        for _ in range(10):
+            self.assertEqual(self._post_chat(self.client).status_code, 200)
+        eleventh = self._post_chat(self.client)
+        self.assertEqual(eleventh.status_code, 429)
+
+    def test_quota_window_is_twenty_hours(self):
+        from .throttling import AssessmentQuotaThrottle, ChatQuotaThrottle
+
+        self.assertEqual(AssessmentQuotaThrottle().duration, 20 * 3600)
+        self.assertEqual(ChatQuotaThrottle().duration, 20 * 3600)
