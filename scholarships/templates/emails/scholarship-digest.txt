@@ -1,0 +1,20 @@
+Hi {{ first_name }},
+
+These 5 scholarships on myScholy are still open and accepting
+applications right now:
+{% for scholarship in scholarships %}
+* {{ scholarship.name }}
+  {{ scholarship.host_country }} - {{ scholarship.degree_level }} - apply by {{ scholarship.deadline|date:"j M Y" }}
+  {{ scholarship.link }}
+{% endfor %}
+These are just 5 of the opportunities on the board - new scholarships
+are added all the time. Explore more, filtered by your region and
+degree level:
+
+{{ frontend_url }}/scholarships
+
+You are receiving this email because you have a myScholy account.
+Every scholarship on myScholy is free to browse and free to apply.
+
+(c) {{ year }} myScholy - Scholarships for students worldwide.
+{{ frontend_url }}

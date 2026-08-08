@@ -176,6 +176,30 @@ sudo systemctl reload caddy
 Caddy fetches the HTTPS certificate automatically (the domain must already
 resolve to the VM for this to work).
 
+## 9b. Schedule the scholarship digest email
+
+The `send_scholarship_digest` management command emails every active student
+5 random live scholarships. A systemd timer runs it every 10 hours:
+
+```bash
+cd ~/myscholy-backend
+sudo cp deploy/oracle/myscholy-digest.service /etc/systemd/system/
+sudo cp deploy/oracle/myscholy-digest.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now myscholy-digest.timer
+systemctl list-timers myscholy-digest.timer     # shows the next run
+```
+
+Test it first without emailing the whole user base:
+
+```bash
+venv/bin/python manage.py send_scholarship_digest --dry-run
+venv/bin/python manage.py send_scholarship_digest --to you@example.com
+```
+
+Run the timer on **one server only** (Oracle). Render must not schedule the
+same command or every student receives the digest twice.
+
 ## 10. Verify
 
 ```bash

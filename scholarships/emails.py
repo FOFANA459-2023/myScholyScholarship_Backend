@@ -1,4 +1,4 @@
-"""Transactional email for MyScholy.
+"""Transactional email for myScholy.
 
 Templates are authored with React Email in the top-level ``emails/`` workspace
 and exported to ``scholarships/templates/emails/*.html`` (run ``npm run
@@ -98,7 +98,7 @@ def send_welcome_email(user):
     _deliver_async(
         "welcome",
         to=[user.email],
-        subject="Welcome to MyScholy",
+        subject="Welcome to myScholy",
         template="welcome",
         context={"first_name": user.first_name or user.username},
     )
@@ -108,7 +108,7 @@ def send_password_reset_email(user, reset_link):
     _deliver_async(
         "password reset",
         to=[user.email],
-        subject="Reset your MyScholy password",
+        subject="Reset your myScholy password",
         template="password-reset",
         context={
             "first_name": user.first_name or user.username,
@@ -118,11 +118,40 @@ def send_password_reset_email(user, reset_link):
     )
 
 
+def send_admin_welcome_email(user):
+    """Sent when an existing admin adds a new administrator account."""
+    _deliver_async(
+        "admin welcome",
+        to=[user.email],
+        subject="Welcome to the myScholy admin team",
+        template="admin-welcome",
+        context={
+            "first_name": user.first_name or user.username,
+            "username": user.username,
+        },
+    )
+
+
+def send_scholarship_digest_email(*, to, first_name, scholarships):
+    """One digest email: 5 randomly picked live scholarships.
+
+    Synchronous by design - it is called from the ``send_scholarship_digest``
+    management command, where fire-and-forget threads could be killed when the
+    process exits. The command handles failures per recipient.
+    """
+    _deliver(
+        to=[to],
+        subject="5 scholarships you can still apply for — myScholy",
+        template="scholarship-digest",
+        context={"first_name": first_name, "scholarships": scholarships},
+    )
+
+
 def send_contact_notification(message):
     _deliver_async(
         "contact notification",
         to=[settings.CONTACT_INBOX],
-        subject=f"MyScholy contact form: {message.name}",
+        subject=f"myScholy contact form: {message.name}",
         template="contact-notification",
         context={
             "name": message.name,

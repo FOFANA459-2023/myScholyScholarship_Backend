@@ -1,0 +1,30 @@
+Welcome to the team, {{ first_name }}!
+
+You have been made an administrator of myScholy - the scholarship
+board trusted by students around the world to find fully funded
+opportunities. That makes you part of a small team with a big
+mission: putting life-changing scholarships in front of the students
+who need them.
+
+As an admin you can now:
+
+* Post new scholarships and put them in front of every student on
+  the board.
+* Curate the board - edit listings, archive closed calls and repost
+  reopened ones.
+* Watch the dashboard - signups, live listings and messages from
+  students.
+
+Sign in to your admin account:
+{{ frontend_url }}/login
+
+Your username is {{ username }}. The administrator who added you set
+your initial password - if you don't have it, use "Forgot password?"
+on the sign-in page to choose your own.
+
+Admin access is a position of trust: everything you post is shown to
+students as-is, so double-check deadlines and links. If you weren't
+expecting this access, contact the myScholy team immediately.
+
+(c) {{ year }} myScholy - Scholarships for students worldwide.
+{{ frontend_url }}

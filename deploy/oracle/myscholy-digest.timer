@@ -1,0 +1,23 @@
+# Runs myscholy-digest.service every 10 hours.
+#
+# Copy to /etc/systemd/system/myscholy-digest.timer, then:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now myscholy-digest.timer
+#   systemctl list-timers myscholy-digest.timer   # shows the next run
+#
+# OnUnitActiveSec counts from the previous run, so the cadence is a true
+# "every 10 hours" (unlike cron's 0/10/20 o'clock, which would squeeze a
+# 4-hour gap in every day). Persistent=true catches up a run missed while
+# the VM was down.
+
+[Unit]
+Description=myScholy scholarship digest every 10 hours
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=10h
+Persistent=true
+Unit=myscholy-digest.service
+
+[Install]
+WantedBy=timers.target

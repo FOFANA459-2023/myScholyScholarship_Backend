@@ -1,4 +1,4 @@
-"""Django settings for the MyScholy backend."""
+"""Django settings for the myScholy backend."""
 
 import os
 from datetime import timedelta
@@ -290,7 +290,7 @@ EMAIL_PORT = env_int("EMAIL_PORT", 587)
 EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS", True)
 EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "myscholy@gmail.com")
 EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
-DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "MyScholy <myscholy@gmail.com>")
+DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "myScholy <myscholy@gmail.com>")
 # Where public contact-form submissions are delivered.
 CONTACT_INBOX = os.environ.get("CONTACT_INBOX", "myscholy@gmail.com")
 EMAIL_BACKEND = (

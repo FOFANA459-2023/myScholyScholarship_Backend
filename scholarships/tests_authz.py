@@ -6,6 +6,8 @@ logout blacklists the refresh token, rotation blacklists the replaced token,
 and access tokens carry the configured expiry.
 """
 
+from unittest import mock
+
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.cache import cache
@@ -82,20 +84,26 @@ class RoleAuthorizationTests(TestCase):
         enumerate who the other administrators are."""
         bearer(self.client, self.admin_user)
         self.assertEqual(self.client.get("/api/admins/").status_code, 403)
-        response = self.client.post(
-            "/api/admins/",
-            {
-                "user": {
-                    "username": "newadmin",
-                    "email": "na@example.com",
-                    "password": "SafePass123",
-                    "first_name": "New",
-                    "last_name": "Admin",
+        with mock.patch(
+            "scholarships.emails.send_admin_welcome_email"
+        ) as welcome:
+            response = self.client.post(
+                "/api/admins/",
+                {
+                    "user": {
+                        "username": "newadmin",
+                        "email": "na@example.com",
+                        "password": "SafePass123",
+                        "first_name": "New",
+                        "last_name": "Admin",
+                    },
                 },
-            },
-            format="json",
-        )
+                format="json",
+            )
         self.assertEqual(response.status_code, 201, response.content)
+        # The new administrator is welcomed by email.
+        welcome.assert_called_once()
+        self.assertEqual(welcome.call_args.args[0].email, "na@example.com")
 
     def test_super_admin_can_list_admins(self):
         bearer(self.client, self.super_user)
@@ -112,23 +120,34 @@ class RoleAuthorizationTests(TestCase):
         )
         self.assertEqual(self.client.delete(f"/api/admins/{target}/").status_code, 403)
 
-    def test_admin_cannot_create_super_admin(self):
-        bearer(self.client, self.admin_user)
-        response = self.client.post(
-            "/api/admins/",
-            {
-                "is_super_admin": True,
-                "user": {
-                    "username": "newsuper",
-                    "email": "ns@example.com",
-                    "password": "SafePass123",
-                    "first_name": "New",
-                    "last_name": "Super",
+    def test_is_super_admin_flag_is_ignored_on_create(self):
+        # Super-admin status can only be enabled manually in the database, so
+        # a requested ``is_super_admin`` is silently dropped - even when the
+        # requester is a super admin themselves.
+        for requester, username in (
+            (self.admin_user, "newsuper1"),
+            (self.super_user, "newsuper2"),
+        ):
+            bearer(self.client, requester)
+            response = self.client.post(
+                "/api/admins/",
+                {
+                    "is_super_admin": True,
+                    "user": {
+                        "username": username,
+                        "email": f"{username}@example.com",
+                        "password": "SafePass123",
+                        "first_name": "New",
+                        "last_name": "Super",
+                    },
                 },
-            },
-            format="json",
-        )
-        self.assertEqual(response.status_code, 403)
+                format="json",
+            )
+            self.assertEqual(response.status_code, 201, response.content)
+            self.assertFalse(response.json()["is_super_admin"])
+            created = User.objects.get(username=username)
+            self.assertFalse(created.is_superuser)
+            self.assertFalse(created.admin.is_super_admin)
 
     def test_super_admin_can_modify_admins_but_not_delete_supers(self):
         bearer(self.client, self.super_user)

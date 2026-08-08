@@ -7,7 +7,7 @@ and the client only transfers the page it renders.
 
 import re
 
-from django.db.models import Q
+from django.db.models import Count, Q
 from django.utils import timezone
 
 from .cache import NS_SCHOLARSHIPS, TTL_FACETS, cached, make_key
@@ -78,6 +78,223 @@ def _rows_matching_term(field, wanted):
     on it stays a single indexed ``IN`` query.
     """
     return _term_map(field).get(wanted.casefold(), [])
+
+
+# ---------------------------------------------------------------------------
+# Canonical filter categories
+# ---------------------------------------------------------------------------
+# The board's dropdowns offer a fixed set of options rather than every
+# distinct string an admin has ever typed. Rows keep their free-text values;
+# each parsed term is *classified* into a category, so "MSc in Data Science"
+# still lands under Graduate and "Multiple countries (France, Malta)" under
+# Europe. Anything the classifier does not recognise simply stays reachable
+# through search and the unfiltered board.
+
+DEGREE_LEVELS = ("Undergraduate", "Graduate", "Postgraduate", "Non-degree")
+
+# Terms that mean "every level" rather than one specific level.
+_ALL_LEVEL_TERMS = {"any", "any level", "all", "all levels", "all degree levels"}
+
+
+def classify_degree(term):
+    """Degree categories a single parsed term belongs to.
+
+    Substring checks are ordered so "graduate" never swallows
+    "undergraduate"/"postgraduate", and anything that names no recognised
+    degree (certificates, diplomas, exchanges, training...) falls through to
+    Non-degree.
+    """
+    text = term.casefold()
+    if text in _ALL_LEVEL_TERMS:
+        return {"Undergraduate", "Graduate", "Postgraduate"}
+
+    categories = set()
+    if "undergraduate" in text or "undergrad" in text or "bachelor" in text:
+        categories.add("Undergraduate")
+    if (
+        "postgraduate" in text
+        or "post-graduate" in text
+        or "postdoc" in text
+        or "post-doc" in text
+        or "phd" in text
+        or "ph.d" in text
+        or "doctor" in text
+        or "dphil" in text
+    ):
+        categories.add("Postgraduate")
+    if (
+        "master" in text
+        or "msc" in text
+        or "m.sc" in text
+        or "mba" in text
+        or "mphil" in text
+        or (
+            "graduate" in text
+            and "undergraduate" not in text
+            and "postgraduate" not in text
+            and "post-graduate" not in text
+        )
+    ):
+        categories.add("Graduate")
+    return categories or {"Non-degree"}
+
+
+REGIONS = ("Africa", "Europe", "Australia", "Asia", "United States", "Canada")
+
+_REGION_COUNTRIES = {
+    "Africa": (
+        "algeria", "angola", "benin", "botswana", "burkina faso", "burundi",
+        "cabo verde", "cape verde", "cameroon", "central african republic",
+        "chad", "comoros", "congo", "democratic republic of the congo",
+        "dr congo", "djibouti", "egypt", "equatorial guinea", "eritrea",
+        "eswatini", "swaziland", "ethiopia", "gabon", "gambia", "the gambia",
+        "ghana", "guinea", "guinea-bissau", "ivory coast", "cote d'ivoire",
+        "côte d'ivoire", "kenya", "lesotho", "liberia", "libya", "madagascar",
+        "malawi", "mali", "mauritania", "mauritius", "morocco", "mozambique",
+        "namibia", "niger", "nigeria", "rwanda", "sao tome and principe",
+        "senegal", "seychelles", "sierra leone", "somalia", "south africa",
+        "south sudan", "sudan", "tanzania", "togo", "tunisia", "uganda",
+        "zambia", "zimbabwe",
+    ),
+    "Europe": (
+        "albania", "andorra", "austria", "belarus", "belgium",
+        "bosnia and herzegovina", "bulgaria", "croatia", "cyprus",
+        "czech republic", "czechia", "denmark", "estonia", "finland",
+        "france", "germany", "greece", "hungary", "iceland", "ireland",
+        "italy", "kosovo", "latvia", "liechtenstein", "lithuania",
+        "luxembourg", "malta", "moldova", "monaco", "montenegro",
+        "netherlands", "the netherlands", "north macedonia", "norway",
+        "poland", "portugal", "romania", "russia", "san marino", "serbia",
+        "slovakia", "slovenia", "spain", "sweden", "switzerland", "ukraine",
+        "united kingdom", "uk", "great britain", "england", "scotland",
+        "wales", "northern ireland",
+    ),
+    "Australia": (
+        "australia", "new zealand", "fiji", "papua new guinea", "samoa",
+        "solomon islands", "tonga", "vanuatu",
+    ),
+    "Asia": (
+        "afghanistan", "armenia", "azerbaijan", "bahrain", "bangladesh",
+        "bhutan", "brunei", "cambodia", "china", "georgia", "hong kong",
+        "india", "indonesia", "iran", "iraq", "israel", "japan", "jordan",
+        "kazakhstan", "kuwait", "kyrgyzstan", "laos", "lebanon", "macau",
+        "malaysia", "maldives", "mongolia", "myanmar", "nepal", "north korea",
+        "oman", "pakistan", "palestine", "philippines", "qatar",
+        "saudi arabia", "singapore", "south korea", "korea", "sri lanka",
+        "syria", "taiwan", "tajikistan", "thailand", "timor-leste", "turkey",
+        "türkiye", "turkiye", "turkmenistan", "united arab emirates", "uae",
+        "uzbekistan", "vietnam", "yemen",
+    ),
+    "United States": (
+        "united states", "united states of america", "usa", "us", "u.s.",
+        "u.s.a.", "america",
+    ),
+    "Canada": ("canada",),
+}
+
+_COUNTRY_TO_REGION = {
+    country: region
+    for region, countries in _REGION_COUNTRIES.items()
+    for country in countries
+}
+
+# Terms that mean "everywhere" rather than one place: those rows should be
+# discoverable under every region rather than under none.
+_GLOBAL_TERMS = {
+    "worldwide", "global", "international", "any", "any country", "various",
+    "various countries", "all countries", "multiple countries", "anywhere",
+    "online", "remote",
+}
+
+
+def classify_region(term):
+    """Regions a single parsed country term belongs to."""
+    text = term.casefold().strip(" .")
+    if text in _GLOBAL_TERMS:
+        return set(REGIONS)
+
+    region = _COUNTRY_TO_REGION.get(text)
+    if region:
+        return {region}
+
+    # Free text like "Countries across Europe" names the region itself.
+    found = set()
+    for name, keyword in (
+        ("Africa", "africa"),
+        ("Europe", "europe"),
+        ("Asia", "asia"),
+        ("Australia", "australia"),
+        ("Australia", "oceania"),
+        ("United States", "united states"),
+        ("Canada", "canada"),
+    ):
+        if keyword in text:
+            found.add(name)
+    return found
+
+
+_CLASSIFIERS = {
+    "host_country": classify_region,
+    "degree_level": classify_degree,
+}
+
+
+def _category_map(field):
+    """Map each canonical category to the raw column values it covers.
+
+    Same shape and caching as ``_term_map``: built once from a distinct query,
+    stored in the versioned scholarship namespace, invalidated by any write.
+    """
+    from .models import Scholarship
+
+    classifier = _CLASSIFIERS[field]
+    key = make_key(NS_SCHOLARSHIPS, "category-map", field=field)
+
+    def build():
+        mapping = {}
+        rows = Scholarship.objects.values_list(field, flat=True).distinct()
+        for raw in rows:
+            categories = set()
+            for term in split_terms(raw):
+                categories |= classifier(term)
+            for category in categories:
+                mapping.setdefault(category.casefold(), []).append(raw)
+        return mapping
+
+    return cached(key, TTL_FACETS, build)
+
+
+def _rows_matching_filter(field, wanted):
+    """Raw column values a filter value selects.
+
+    Canonical categories (the fixed dropdown options) resolve through the
+    classifier; anything else - old bookmarked URLs, hand-typed queries -
+    falls back to exact term matching so it keeps working.
+    """
+    rows = _category_map(field).get(wanted.casefold())
+    if rows is not None:
+        return rows
+    return _rows_matching_term(field, wanted)
+
+
+def category_facets(queryset, field, categories):
+    """Counts per canonical category, in the fixed dropdown order.
+
+    A row spanning several categories ("Masters, PhD") counts towards each,
+    but only once per category.
+    """
+    classifier = _CLASSIFIERS[field]
+    counts = {category: 0 for category in categories}
+    rows = queryset.values(field).annotate(count=Count("id"))
+    for row in rows:
+        matched = set()
+        for term in split_terms(row[field]):
+            matched |= classifier(term)
+        for category in matched:
+            if category in counts:
+                counts[category] += row["count"]
+    return [{"value": category, "count": counts[category]} for category in categories]
+
 
 ORDERING_FIELDS = {
     "newest": ("-created_at",),
@@ -157,11 +374,11 @@ def apply_filters(queryset, params):
         )
 
     if params["country"]:
-        matches = _rows_matching_term("host_country", params["country"])
+        matches = _rows_matching_filter("host_country", params["country"])
         queryset = queryset.filter(host_country__in=matches) if matches else queryset.none()
 
     if params["degree"]:
-        matches = _rows_matching_term("degree_level", params["degree"])
+        matches = _rows_matching_filter("degree_level", params["degree"])
         queryset = queryset.filter(degree_level__in=matches) if matches else queryset.none()
 
     return queryset.order_by(*ORDERING_FIELDS[params["ordering"]])

@@ -53,7 +53,13 @@ from .cache import (
     get_version,
     make_key,
 )
-from .filters import apply_filters, normalize_params, split_terms
+from .filters import (
+    DEGREE_LEVELS,
+    REGIONS,
+    apply_filters,
+    category_facets,
+    normalize_params,
+)
 from .models import Admin, ContactMessage, Scholarship, Student
 from .pagination import ScholarshipPagination
 from .permissions import IsAdmin, IsAdminOrReadOnly, IsSuperAdmin, role_for
@@ -176,42 +182,21 @@ class ScholarshipDetailView(generics.RetrieveUpdateDestroyAPIView):
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def scholarship_facets(request):
-    """Distinct countries and degree levels with counts, for the filter UI.
+    """Fixed filter options with live counts, for the filter UI.
 
-    Previously the client derived these by downloading every scholarship. This
-    is two grouped queries, cached for 15 minutes.
+    Both dropdowns offer a stable, canonical set of options - study regions
+    and degree-level buckets - rather than every distinct string admins have
+    typed. Rows are matched into those buckets by ``filters.py``.
     """
     etag = etag_for(NS_SCHOLARSHIPS, facets=True)
     key = make_key(NS_SCHOLARSHIPS, "facets")
 
     def build():
         # Facets describe what the public board can show: live rows only.
-        # Archived scholarships must not add options no visible row matches.
         active = Scholarship.objects.active().open_for_application()
-
-        def tally(field):
-            """Count scholarships per individual term stored in ``field``.
-
-            A row reading "Graduate, Postgraduate" counts towards both, so the
-            dropdown offers each level once instead of listing every stored
-            combination as its own option.
-            """
-            counts = {}
-            labels = {}
-            rows = active.values(field).annotate(count=Count("id"))
-            for row in rows:
-                for term in split_terms(row[field]):
-                    key = term.casefold()
-                    counts[key] = counts.get(key, 0) + row["count"]
-                    labels.setdefault(key, term)
-            return [
-                {"value": labels[key], "count": counts[key]}
-                for key in sorted(counts, key=lambda k: labels[k].lower())
-            ]
-
         return {
-            "countries": tally("host_country"),
-            "degree_levels": tally("degree_level"),
+            "countries": category_facets(active, "host_country", REGIONS),
+            "degree_levels": category_facets(active, "degree_level", DEGREE_LEVELS),
         }
 
     return _apply_cache_headers(
@@ -370,14 +355,11 @@ def admin_register(request):
     themselves administrator access."""
     serializer = AdminSerializer(data=request.data)
     if serializer.is_valid():
-        if serializer.validated_data.get("is_super_admin") and not role_for(
-            request.user
-        )["is_super_admin"]:
-            return Response(
-                {"error": "Only super admins can create super admins"},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        # Super-admin status can never be granted through the API; it is only
+        # enabled manually in the database (auth_user / scholarships_admin).
+        serializer.validated_data["is_super_admin"] = False
         admin = serializer.save()
+        emails.send_admin_welcome_email(admin.user)
         return Response(
             {"message": "Admin registered successfully", "admin_id": admin.id},
             status=status.HTTP_201_CREATED,
@@ -710,19 +692,6 @@ def _create_admin_user(request):
             {"error": "User data required"}, status=status.HTTP_400_BAD_REQUEST
         )
 
-    wants_super_admin = str(request.data.get("is_super_admin", "")).lower() in {
-        "true",
-        "1",
-        "yes",
-    } or request.data.get("is_super_admin") is True
-
-    requester_is_super_admin = role_for(request.user)["is_super_admin"]
-    if wants_super_admin and not requester_is_super_admin:
-        return Response(
-            {"error": "Only super admins can create super admins"},
-            status=status.HTTP_403_FORBIDDEN,
-        )
-
     username = (user_data.get("username") or "").strip()
     email = (user_data.get("email") or "").strip()
     if User.objects.filter(Q(username__iexact=username) | Q(email__iexact=email)).exists():
@@ -738,11 +707,15 @@ def _create_admin_user(request):
     with transaction.atomic():
         user = user_serializer.save()
         user.is_staff = True
-        user.is_superuser = bool(wants_super_admin and requester_is_super_admin)
+        # Never grant super-admin here: that flag is only ever enabled by hand
+        # in the database (auth_user.is_superuser / scholarships_admin).
+        user.is_superuser = False
         user.save(update_fields=["is_staff", "is_superuser"])
-        admin = Admin.objects.create(
-            user=user, is_super_admin=bool(wants_super_admin and requester_is_super_admin)
-        )
+        admin = Admin.objects.create(user=user, is_super_admin=False)
+
+    # After the transaction commits, so the welcome email can never announce
+    # an account a rollback then discarded.
+    emails.send_admin_welcome_email(user)
 
     return Response(
         {
@@ -831,18 +804,9 @@ def _update_admin_user(request, user):
         user.is_staff = True
         updates.append("is_staff")
 
-    is_super_admin = request.data.get("is_super_admin")
-    if is_super_admin is not None:
-        if isinstance(is_super_admin, str):
-            is_super_admin = is_super_admin.lower() in {"true", "1", "yes"}
-        is_super_admin = bool(is_super_admin)
-        user.is_superuser = is_super_admin
-        updates.append("is_superuser")
-        Admin.objects.update_or_create(
-            user=user, defaults={"is_super_admin": is_super_admin}
-        )
-    else:
-        Admin.objects.get_or_create(user=user)
+    # ``is_super_admin`` in the payload is deliberately ignored: super-admin
+    # status is only ever toggled manually in the database.
+    Admin.objects.get_or_create(user=user)
 
     if updates:
         user.save(update_fields=list(dict.fromkeys(updates)))
@@ -1336,9 +1300,9 @@ def contact_messages(request):
 # ---------------------------------------------------------------------------
 
 API_INFO = {
-    "message": "Welcome to the MyScholy API",
+    "message": "Welcome to the myScholy API",
     "version": "2.0",
-    "description": "REST API powering the MyScholy scholarship board",
+    "description": "REST API powering the myScholy scholarship board",
     "status": "operational",
     "endpoints": {
         "authentication": {

@@ -59,7 +59,7 @@ class Command(BaseCommand):
                 "eligibility": "Seeded eligibility",
                 "degree_level": "Masters",
                 "link": "https://example.com/apply",
-                "author": "MyScholy",
+                "author": "myScholy",
                 "is_active": True,
             },
         )

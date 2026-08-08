@@ -21,7 +21,7 @@ def make_scholarship(**overrides):
         "eligibility": "Bachelor's degree\nTwo years work experience",
         "degree_level": "Masters",
         "link": "https://example.com/apply",
-        "author": "MyScholy",
+        "author": "myScholy",
     }
     defaults.update(overrides)
     return Scholarship.objects.create(**defaults)
@@ -91,12 +91,50 @@ class ScholarshipListTests(TestCase):
         self.assertEqual(second.json()["count"], 3)
 
     def test_facets_endpoint(self):
-        """Facets describe the live board only - archived rows must not add
-        dropdown options that no visible scholarship matches."""
+        """Facets offer the fixed regions and degree buckets, counting the
+        live board only - archived rows must not inflate any count."""
         body = self.client.get("/api/scholarships/facets/").json()
-        countries = {row["value"] for row in body["countries"]}
-        self.assertEqual(countries, {"United Kingdom", "Rwanda"})
-        self.assertTrue(all("count" in row for row in body["degree_levels"]))
+
+        countries = {row["value"]: row["count"] for row in body["countries"]}
+        self.assertEqual(
+            set(countries),
+            {"Africa", "Europe", "Australia", "Asia", "United States", "Canada"},
+        )
+        # United Kingdom -> Europe, Rwanda -> Africa; both Japan rows are
+        # archived so Asia counts nothing.
+        self.assertEqual(countries["Europe"], 1)
+        self.assertEqual(countries["Africa"], 1)
+        self.assertEqual(countries["Asia"], 0)
+
+        degrees = {row["value"]: row["count"] for row in body["degree_levels"]}
+        self.assertEqual(
+            set(degrees),
+            {"Undergraduate", "Graduate", "Postgraduate", "Non-degree"},
+        )
+        # All live rows are seeded as "Masters" -> Graduate.
+        self.assertEqual(degrees["Graduate"], 2)
+
+    def test_region_and_degree_bucket_filters(self):
+        """The canonical dropdown values select rows by classification while
+        exact stored values (old bookmarked URLs) keep working."""
+        self.assertEqual(
+            self.client.get("/api/scholarships/?country=Africa").json()["count"], 1
+        )
+        self.assertEqual(
+            self.client.get("/api/scholarships/?country=Europe").json()["count"], 1
+        )
+        # Both Japan rows are archived, so Asia matches nothing live.
+        self.assertEqual(
+            self.client.get("/api/scholarships/?country=Asia").json()["count"], 0
+        )
+        # Seeded degree_level "Masters" classifies as Graduate, not the others.
+        self.assertEqual(
+            self.client.get("/api/scholarships/?degree=Graduate").json()["count"], 2
+        )
+        self.assertEqual(
+            self.client.get("/api/scholarships/?degree=Undergraduate").json()["count"],
+            0,
+        )
 
     def test_hidden_scholarship_is_not_readable_by_id(self):
         hidden = Scholarship.objects.get(name="Hidden Award")
@@ -408,7 +446,7 @@ class TransactionalEmailTests(TestCase):
         with self.settings(RESEND_API_KEY=""):
             emails._deliver(
                 to=[user.email],
-                subject="Welcome to MyScholy",
+                subject="Welcome to myScholy",
                 template="welcome",
                 context={"first_name": user.first_name},
             )
@@ -427,7 +465,7 @@ class TransactionalEmailTests(TestCase):
         with self.settings(RESEND_API_KEY=""):
             emails._deliver(
                 to=["ama@example.com"],
-                subject="Reset your MyScholy password",
+                subject="Reset your myScholy password",
                 template="password-reset",
                 context={
                     "first_name": "Ama",
@@ -446,7 +484,7 @@ class TransactionalEmailTests(TestCase):
         with self.settings(RESEND_API_KEY=""):
             emails._deliver(
                 to=["team@example.com"],
-                subject="MyScholy contact form: Mallory",
+                subject="myScholy contact form: Mallory",
                 template="contact-notification",
                 context={
                     "name": "Mallory",
@@ -462,6 +500,104 @@ class TransactionalEmailTests(TestCase):
         self.assertNotIn("<script>alert(1)</script>", html)
         self.assertIn("&lt;script&gt;", html)
         self.assertIn("second line", html)
+
+    def test_admin_welcome_email_renders_html_and_text(self):
+        from . import emails
+
+        with self.settings(RESEND_API_KEY=""):
+            emails._deliver(
+                to=["kofi@example.com"],
+                subject="Welcome to the myScholy admin team",
+                template="admin-welcome",
+                context={"first_name": "Kofi", "username": "kofi"},
+            )
+        message = self._last_message()
+        self.assertIn("Kofi", message.body)
+        self.assertIn("kofi", message.body)
+        html = message.alternatives[0][0]
+        self.assertIn("Kofi", html)
+        self.assertIn("administrator", html)
+        self.assertNotIn("{{", html)
+        self.assertNotIn("{%", html)
+
+    def test_scholarship_digest_email_lists_every_scholarship(self):
+        from . import emails
+
+        rows = [
+            make_scholarship(name=f"Digest Award {i}", link=f"https://example.com/{i}")
+            for i in range(5)
+        ]
+        with self.settings(RESEND_API_KEY=""):
+            emails.send_scholarship_digest_email(
+                to="ama@example.com", first_name="Ama", scholarships=rows
+            )
+        message = self._last_message()
+        html = message.alternatives[0][0]
+        for row in rows:
+            self.assertIn(row.name, message.body)
+            self.assertIn(row.link, message.body)
+            self.assertIn(row.name, html)
+            self.assertIn(f'href="{row.link}"', html)
+        # The explore-more redirect back to the site.
+        self.assertIn("/scholarships", html)
+        self.assertNotIn("{{", html)
+        self.assertNotIn("{%", html)
+
+
+class ScholarshipDigestCommandTests(TestCase):
+    """The 10-hourly digest command: 5 random live scholarships to every
+    active student, never to admins, archived rows never picked."""
+
+    def setUp(self):
+        cache.clear()
+
+    def _make_student(self, username, email, first_name=""):
+        user = User.objects.create_user(
+            username, email=email, password="x", first_name=first_name
+        )
+        Student.objects.create(user=user)
+        return user
+
+    def test_digest_goes_to_students_with_live_scholarships_only(self):
+        from django.core.management import call_command
+
+        for i in range(7):
+            make_scholarship(name=f"Live Award {i}")
+        make_scholarship(name="Hidden Award", is_active=False)
+        make_scholarship(
+            name="Expired Award",
+            deadline=timezone.now().date() - timedelta(days=1),
+        )
+
+        self._make_student("ama", "ama@example.com", "Ama")
+        self._make_student("kofi", "kofi@example.com")
+        admin_user = User.objects.create_user(
+            "boss", email="boss@example.com", password="x", is_staff=True
+        )
+        Admin.objects.create(user=admin_user)
+
+        from django.core import mail
+
+        with self.settings(RESEND_API_KEY=""):
+            call_command("send_scholarship_digest")
+
+        recipients = sorted(message.to[0] for message in mail.outbox)
+        self.assertEqual(recipients, ["ama@example.com", "kofi@example.com"])
+        for message in mail.outbox:
+            self.assertNotIn("Hidden Award", message.body)
+            self.assertNotIn("Expired Award", message.body)
+            # 5 picks out of the 7 live rows.
+            self.assertEqual(message.body.count("Live Award"), 5)
+
+    def test_dry_run_sends_nothing(self):
+        from django.core import mail
+        from django.core.management import call_command
+
+        make_scholarship(name="Live Award")
+        self._make_student("ama", "ama@example.com", "Ama")
+        with self.settings(RESEND_API_KEY=""):
+            call_command("send_scholarship_digest", "--dry-run")
+        self.assertEqual(mail.outbox, [])
 
 
 class RegistrationValidationTests(TestCase):
@@ -644,7 +780,7 @@ class ScholarshipValidationTests(TestCase):
             "eligibility": "An undergraduate degree",
             "degree_level": "Masters",
             "link": "https://example.com/apply",
-            "author": "MyScholy",
+            "author": "myScholy",
         }
         payload.update(overrides)
         return self.client.post("/api/scholarships/", payload, format="json")

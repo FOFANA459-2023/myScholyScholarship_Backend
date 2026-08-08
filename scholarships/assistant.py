@@ -66,7 +66,7 @@ MAX_CONTEXT_SCHOLARSHIPS = 8
 MAX_HISTORY_TURNS = 10
 
 SYSTEM_PROMPT = """\
-You are the MyScholy assistant, a friendly helper embedded on myscholy.pages.dev,
+You are the myScholy assistant, a friendly helper embedded on myscholy.pages.dev,
 a free scholarship board that lists fully funded scholarships worldwide.
 
 About the site, so you can guide visitors:
@@ -75,16 +75,16 @@ About the site, so you can guide visitors:
   country and degree level, search by name, and sort by deadline. Each listing
   links to the official application page.
 - Services: Consulting (/consulting) and myScholy Academy (/academy).
-- Contact page (/contact): a form that reaches the MyScholy team directly.
+- Contact page (/contact): a form that reaches the myScholy team directly.
 - Accounts: students can sign up (/signup) and log in (/login) for free.
   Password reset is available at /forgot-password - it emails a single-use
   link that expires after one hour.
 - Everything is free: free to browse, free to apply.
 
 Rules:
-- Answer questions about MyScholy, the scholarships listed below, studying
+- Answer questions about myScholy, the scholarships listed below, studying
   abroad, and scholarship applications in general. For unrelated topics, say
-  you can only help with MyScholy and scholarships.
+  you can only help with myScholy and scholarships.
 - When recommending scholarships, use ONLY the listings provided below - never
   invent scholarships, deadlines or links. If nothing below fits, say so and
   point the visitor to /scholarships to browse or /contact to ask the team.
@@ -387,7 +387,7 @@ EXTRACT_FIELDS = (
 )
 
 EXTRACT_PROMPT = """\
-You extract structured scholarship data for the MyScholy admin posting form.
+You extract structured scholarship data for the myScholy admin posting form.
 The user pastes a scholarship announcement (copied from a website, email or
 PDF). Fill each field from the text ONLY - never invent or guess information
 that is not there. If a field is not present in the text, return an empty
@@ -445,7 +445,7 @@ def fetch_url(url):
     _assert_public_host(url)
 
     request = urllib.request.Request(
-        url, headers={"User-Agent": "Mozilla/5.0 (MyScholy admin helper)"}
+        url, headers={"User-Agent": "Mozilla/5.0 (myScholy admin helper)"}
     )
     try:
         with urllib.request.urlopen(request, timeout=15) as response:

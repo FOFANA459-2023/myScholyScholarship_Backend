@@ -1,0 +1,19 @@
+# One-shot job that sends the scholarship digest email (5 random live
+# scholarships to every student). Started by myscholy-digest.timer - never
+# enable this service directly.
+#
+# Copy to /etc/systemd/system/myscholy-digest.service (see ORACLE_DEPLOY.md).
+# Adjust paths if you cloned the repo somewhere other than
+# /home/ubuntu/myscholy-backend.
+
+[Unit]
+Description=myScholy scholarship digest email (one-shot)
+After=network.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/myscholy-backend
+# Settings are read from /home/ubuntu/myscholy-backend/.env by python-dotenv.
+ExecStart=/home/ubuntu/myscholy-backend/venv/bin/python manage.py send_scholarship_digest

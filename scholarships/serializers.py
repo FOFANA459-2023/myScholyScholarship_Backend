@@ -113,7 +113,8 @@ class ScholarshipSerializer(serializers.ModelSerializer):
         value = _clean(value)
         if not value:
             raise serializers.ValidationError(
-                "Enter the degree level, e.g. Masters. This powers the board filter."
+                "Enter the degree level/program type, e.g. Masters. "
+                "This powers the board filter."
             )
         return value
 
