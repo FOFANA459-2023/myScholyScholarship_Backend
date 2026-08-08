@@ -141,7 +141,7 @@ def send_scholarship_digest_email(*, to, first_name, scholarships):
     """
     _deliver(
         to=[to],
-        subject="5 scholarships you can still apply for — myScholy",
+        subject="myScholy: Scholarships you can still apply for!",
         template="scholarship-digest",
         context={"first_name": first_name, "scholarships": scholarships},
     )

@@ -10,7 +10,7 @@
   <div
     style="display:none;overflow:hidden;line-height:1px;opacity:0;max-height:0;max-width:0"
     data-skip-in-text="true">
-    5 scholarships you can still apply for - fresh from the myScholy board.
+    Fresh scholarships picked for you, open and accepting applications right now.
   </div>
   <body style="background-color:#f1f5f9;margin:0;padding:0">
     <table border="0" width="100%" cellpadding="0" cellspacing="0" role="presentation" align="center">
@@ -42,11 +42,13 @@
                         <tr>
                           <td>
                             <h1 style="color:#0f172a;font-size:20px;font-weight:700;line-height:28px;margin:0 0 16px">
-                              Hi {{ first_name }}, these 5 scholarships are still open
+                              Hello {{ first_name }}, your next opportunity could be here!
                             </h1>
-                            <p style="font-size:15px;line-height:24px;color:#334155;margin:0 0 20px">
-                              A fresh pick from the myScholy board - every one of
-                              these is live right now and accepting applications.
+                            <p style="font-size:15px;line-height:24px;color:#334155;margin:0 0 16px">
+                              Great news! We picked these scholarships from the
+                              myScholy board just for you. Every one of them is
+                              open and accepting applications right now, so take
+                              a look and see which one fits your dream.
                             </p>
                             {% for scholarship in scholarships %}
                             <table align="center" width="100%" border="0" cellpadding="0" cellspacing="0" role="presentation"
@@ -80,10 +82,10 @@
                               </tbody>
                             </table>
                             <p style="font-size:13px;line-height:20px;color:#64748b;margin:0 0 8px">
-                              These are just 5 of the opportunities on the board -
-                              new scholarships are added all the time. Filter by
-                              your region and degree level to find the ones made
-                              for you.
+                              These are just a few of the opportunities on the
+                              board. New scholarships are added all the time, so
+                              filter by your region and degree level to find the
+                              ones made for you.
                             </p>
                             <hr style="width:100%;border:none;border-top:1px solid #e2e8f0;margin:24px 0" />
                             <p style="font-size:13px;line-height:20px;color:#64748b;margin:0 0 8px">
@@ -106,7 +108,7 @@
                               <a href="{{ frontend_url }}/contact" style="color:#64748b;text-decoration:underline" target="_blank">Contact us</a>
                             </p>
                             <p style="font-size:12px;line-height:18px;color:#94a3b8;margin:0 0 4px">
-                              © {{ year }} myScholy — Scholarships for students worldwide.
+                              © {{ year }} myScholy. Scholarships for students worldwide.
                             </p>
                             <p style="font-size:12px;line-height:18px;color:#94a3b8;margin:0 0 4px">
                               <a href="{{ frontend_url }}" style="color:#94a3b8;text-decoration:none" target="_blank">{{ frontend_url }}</a>
