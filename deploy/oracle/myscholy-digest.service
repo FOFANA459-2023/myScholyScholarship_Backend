@@ -1,6 +1,6 @@
 # One-shot job that sends the scholarship digest email (5 random live
-# scholarships to every student). Started by myscholy-digest.timer - never
-# enable this service directly.
+# scholarships to every student, every 15 hours). Started by
+# myscholy-digest.timer - never enable this service directly.
 #
 # Copy to /etc/systemd/system/myscholy-digest.service (see ORACLE_DEPLOY.md).
 # Adjust paths if you cloned the repo somewhere other than

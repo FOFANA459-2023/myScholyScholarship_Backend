@@ -108,8 +108,8 @@ DJANGO_SECRET_KEY=<generate a fresh one, command below>
 
 # Replace the Render hostname with the Oracle one.
 DJANGO_ALLOWED_HOSTS=api.yourdomain.com,localhost,127.0.0.1
-DJANGO_CSRF_TRUSTED_ORIGINS=https://api.yourdomain.com,https://myscholy.vercel.app
-DJANGO_CORS_ALLOWED_ORIGINS=https://myscholy.vercel.app
+DJANGO_CSRF_TRUSTED_ORIGINS=https://api.yourdomain.com,https://myscholy.pages.dev
+DJANGO_CORS_ALLOWED_ORIGINS=https://myscholy.pages.dev
 
 # Database — same Supabase values as on Render.
 DB_NAME=postgres
@@ -123,7 +123,7 @@ DB_SSLMODE=require
 RESEND_API_KEY=...
 DEFAULT_FROM_EMAIL=MyScholy <no-reply@yourdomain.com>
 CONTACT_INBOX=myscholy@gmail.com
-FRONTEND_URL=https://myscholy.vercel.app
+FRONTEND_URL=https://myscholy.pages.dev
 
 # Cache — local Redis on this VM (replaces the Render Redis URL).
 REDIS_URL=redis://127.0.0.1:6379/0
@@ -179,7 +179,8 @@ resolve to the VM for this to work).
 ## 9b. Schedule the scholarship digest email
 
 The `send_scholarship_digest` management command emails every active student
-5 random live scholarships. A systemd timer runs it every 10 hours:
+5 random live scholarships (linking to each scholarship's myScholy detail
+page, not the official site). A systemd timer runs it every 15 hours:
 
 ```bash
 cd ~/myscholy-backend
@@ -198,7 +199,11 @@ venv/bin/python manage.py send_scholarship_digest --to you@example.com
 ```
 
 Run the timer on **one server only** (Oracle). Render must not schedule the
-same command or every student receives the digest twice.
+same command. As a backstop, the command records each send in the shared
+database (`DigestRun`) and skips if a digest already went out in the last
+14 hours - so even a duplicate scheduler can't email every student twice.
+If a scheduled run logs "Digest already sent ... skipping", some other
+machine or timer is also triggering the command; find and remove it.
 
 ## 10. Verify
 
@@ -211,8 +216,10 @@ loads with styling (proves collectstatic + WhiteNoise are working).
 
 ## 11. Make Oracle the primary
 
-1. In Vercel: set `VITE_BACKEND_URL=https://api.yourdomain.com/api` and
-   redeploy.
+1. In the frontend repo (GitHub → Settings → Secrets and variables →
+   Actions → Variables): set `VITE_BACKEND_URL=https://api.yourdomain.com/api`
+   and re-run the deploy workflow. (The CI deploys to Cloudflare Pages; the
+   variable overrides the default baked into `.github/workflows/ci.yml`.)
 2. In the frontend repo, update the `preconnect`/`dns-prefetch` links in
    `index.html` and the default in `.github/workflows/ci.yml` from the
    `onrender.com` URL to the new one.
@@ -229,9 +236,9 @@ How the two roles work:
 
 - **Backup / failover**: both servers point at the same Supabase database, so
   Render always has current data. If Oracle goes down, switching the site
-  over is one change: set `VITE_BACKEND_URL` back to
-  `https://myscholyscholarship-backend.onrender.com/api` in Vercel and
-  redeploy (2–3 minutes). Keep the `onrender.com` entries in
+  over is one change: set the `VITE_BACKEND_URL` GitHub Actions variable back
+  to `https://myscholyscholarship-backend.onrender.com/api` and re-run the
+  deploy workflow (2–3 minutes). Keep the `onrender.com` entries in
   `DJANGO_CORS_ALLOWED_ORIGINS`/`CSRF_TRUSTED_ORIGINS` on Render so the
   frontend is accepted when that happens.
 - **Staging / testing**: deploy a branch or new commit to Render first, test

@@ -70,6 +70,26 @@ class Scholarship(models.Model):
         return self.deadline >= timezone.now().date()
 
 
+class DigestRun(models.Model):
+    """One row per full scholarship-digest send.
+
+    The ``send_scholarship_digest`` command refuses to run when a row exists
+    inside its minimum interval. Both production servers (Oracle and the
+    Render backup) share this database, so the guard holds even if the
+    command gets scheduled on more than one machine - the second trigger
+    sees the first one's row and skips instead of emailing everyone twice.
+    """
+
+    sent_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    recipient_count = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ["-sent_at"]
+
+    def __str__(self):
+        return f"Digest at {self.sent_at:%Y-%m-%d %H:%M} UTC"
+
+
 class Student(models.Model):
     """A student profile.
 

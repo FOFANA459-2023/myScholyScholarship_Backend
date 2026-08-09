@@ -57,7 +57,10 @@
                                 <tr>
                                   <td style="padding:14px 16px">
                                     <p style="font-size:15px;line-height:22px;margin:0 0 4px">
-                                      <a href="{{ scholarship.link }}" style="color:#0284c7;font-weight:600;text-decoration:underline" target="_blank"
+                                      {# Deliberately the myScholy detail page, NOT scholarship.link: #}
+                                      {# students should read about it on our board first - the #}
+                                      {# official site is one click away from there. #}
+                                      <a href="{{ frontend_url }}/scholarships/{{ scholarship.id }}" style="color:#0284c7;font-weight:600;text-decoration:underline" target="_blank"
                                         >{{ scholarship.name }}</a>
                                     </p>
                                     <p style="font-size:13px;line-height:20px;color:#64748b;margin:0">

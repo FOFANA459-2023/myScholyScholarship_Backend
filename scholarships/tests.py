@@ -2,13 +2,14 @@ import os
 from datetime import timedelta
 from unittest import mock
 
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.cache import cache
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from .models import Admin, ContactMessage, Scholarship, Student
+from .models import Admin, ContactMessage, DigestRun, Scholarship, Student
 
 
 def make_scholarship(**overrides):
@@ -535,9 +536,14 @@ class TransactionalEmailTests(TestCase):
         html = message.alternatives[0][0]
         for row in rows:
             self.assertIn(row.name, message.body)
-            self.assertIn(row.link, message.body)
+            # Links go to our own detail page, never the official site -
+            # students should read about the scholarship on the board first.
+            detail = f"{settings.FRONTEND_URL}/scholarships/{row.pk}"
+            self.assertIn(detail, message.body)
+            self.assertNotIn(row.link, message.body)
             self.assertIn(row.name, html)
-            self.assertIn(f'href="{row.link}"', html)
+            self.assertIn(f'href="{detail}"', html)
+            self.assertNotIn(f'href="{row.link}"', html)
         # The explore-more redirect back to the site.
         self.assertIn("/scholarships", html)
         self.assertNotIn("{{", html)
@@ -545,8 +551,9 @@ class TransactionalEmailTests(TestCase):
 
 
 class ScholarshipDigestCommandTests(TestCase):
-    """The 10-hourly digest command: 5 random live scholarships to every
-    active student, never to admins, archived rows never picked."""
+    """The 15-hourly digest command: 5 random live scholarships to every
+    active student, never to admins, archived rows never picked, and never
+    twice inside the minimum interval (the DigestRun guard)."""
 
     def setUp(self):
         cache.clear()
@@ -598,6 +605,64 @@ class ScholarshipDigestCommandTests(TestCase):
         with self.settings(RESEND_API_KEY=""):
             call_command("send_scholarship_digest", "--dry-run")
         self.assertEqual(mail.outbox, [])
+        # Dry runs must not consume the interval guard.
+        self.assertEqual(DigestRun.objects.count(), 0)
+
+    def test_full_send_records_a_run(self):
+        from django.core import mail
+        from django.core.management import call_command
+
+        make_scholarship(name="Live Award")
+        self._make_student("ama", "ama@example.com", "Ama")
+        with self.settings(RESEND_API_KEY=""):
+            call_command("send_scholarship_digest")
+        self.assertEqual(len(mail.outbox), 1)
+        run = DigestRun.objects.get()
+        self.assertEqual(run.recipient_count, 1)
+
+    def test_second_trigger_inside_interval_is_skipped(self):
+        from django.core import mail
+        from django.core.management import call_command
+
+        make_scholarship(name="Live Award")
+        self._make_student("ama", "ama@example.com", "Ama")
+        DigestRun.objects.create()  # a digest just went out
+        with self.settings(RESEND_API_KEY=""):
+            call_command("send_scholarship_digest")
+        self.assertEqual(mail.outbox, [])
+        self.assertEqual(DigestRun.objects.count(), 1)
+
+    def test_trigger_after_interval_sends_again(self):
+        from django.core import mail
+        from django.core.management import call_command
+
+        from .management.commands.send_scholarship_digest import (
+            MIN_HOURS_BETWEEN_RUNS,
+        )
+
+        make_scholarship(name="Live Award")
+        self._make_student("ama", "ama@example.com", "Ama")
+        stale = DigestRun.objects.create()
+        DigestRun.objects.filter(pk=stale.pk).update(
+            sent_at=timezone.now() - timedelta(hours=MIN_HOURS_BETWEEN_RUNS, minutes=5)
+        )
+        with self.settings(RESEND_API_KEY=""):
+            call_command("send_scholarship_digest")
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(DigestRun.objects.count(), 2)
+
+    def test_to_flag_bypasses_the_guard_for_testing(self):
+        from django.core import mail
+        from django.core.management import call_command
+
+        make_scholarship(name="Live Award")
+        DigestRun.objects.create()  # would block a full send
+        with self.settings(RESEND_API_KEY=""):
+            call_command("send_scholarship_digest", "--to", "me@example.com")
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, ["me@example.com"])
+        # Test sends never count as the scheduled digest.
+        self.assertEqual(DigestRun.objects.count(), 1)
 
 
 class RegistrationValidationTests(TestCase):

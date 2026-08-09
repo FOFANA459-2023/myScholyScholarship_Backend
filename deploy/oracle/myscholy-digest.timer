@@ -1,4 +1,4 @@
-# Runs myscholy-digest.service every 10 hours.
+# Runs myscholy-digest.service every 15 hours.
 #
 # Copy to /etc/systemd/system/myscholy-digest.timer, then:
 #   sudo systemctl daemon-reload
@@ -6,16 +6,17 @@
 #   systemctl list-timers myscholy-digest.timer   # shows the next run
 #
 # OnUnitActiveSec counts from the previous run, so the cadence is a true
-# "every 10 hours" (unlike cron's 0/10/20 o'clock, which would squeeze a
-# 4-hour gap in every day). Persistent=true catches up a run missed while
-# the VM was down.
+# "every 15 hours" (cron can't express a 15-hour rhythm at all - it would
+# drift or need a wrapper). Persistent=true catches up a run missed while
+# the VM was down. The command itself also refuses to send twice within
+# 14 hours (DigestRun guard), so a duplicate trigger can't double-email.
 
 [Unit]
-Description=myScholy scholarship digest every 10 hours
+Description=myScholy scholarship digest every 15 hours
 
 [Timer]
 OnBootSec=15min
-OnUnitActiveSec=10h
+OnUnitActiveSec=15h
 Persistent=true
 Unit=myscholy-digest.service
 
