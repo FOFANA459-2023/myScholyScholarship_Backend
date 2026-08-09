@@ -50,15 +50,13 @@ ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS") or [
     "myscholyscholarship-backend.onrender.com",
     "localhost",
     "127.0.0.1",
-    ".vercel.app",
     ".netlify.app",
 ]
 
 CSRF_TRUSTED_ORIGINS = env_list("DJANGO_CSRF_TRUSTED_ORIGINS") or [
     "https://myscholyscholarship-backend.onrender.com",
-    "https://myscholy.vercel.app",
+    "https://myscholy.pages.dev",
     "https://*.pages.dev",
-    "https://*.vercel.app",
     "https://*.netlify.app",
     "http://localhost:8000",
 ]
@@ -74,18 +72,17 @@ SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 # origin if it did work. Origins are now an explicit allow-list.
 
 CORS_ALLOWED_ORIGINS = env_list("DJANGO_CORS_ALLOWED_ORIGINS") or [
-    "https://myscholy.vercel.app",
+    "https://myscholy.pages.dev",
     "http://localhost:3000",
     "http://localhost:5173",
     "http://127.0.0.1:3000",
     "http://127.0.0.1:5173",
 ]
-# Cloudflare Pages previews/production plus the older Vercel/Netlify hosts.
+# Cloudflare Pages previews/production plus the older Netlify host.
 # A custom domain (e.g. https://myscholy.com) must be added explicitly via the
 # DJANGO_CORS_ALLOWED_ORIGINS env var on Render.
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^https://.*\.pages\.dev$",
-    r"^https://.*\.vercel\.app$",
     r"^https://.*\.netlify\.app$",
 ]
 CORS_ALLOW_CREDENTIALS = True
