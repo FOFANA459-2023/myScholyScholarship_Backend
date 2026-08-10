@@ -121,7 +121,7 @@ DB_SSLMODE=require
 
 # Email — same as on Render.
 RESEND_API_KEY=...
-DEFAULT_FROM_EMAIL=MyScholy <no-reply@yourdomain.com>
+DEFAULT_FROM_EMAIL=myScholy <no-reply@yourdomain.com>
 CONTACT_INBOX=myscholy@gmail.com
 FRONTEND_URL=https://myscholy.pages.dev
 

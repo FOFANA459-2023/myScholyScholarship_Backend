@@ -24,7 +24,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Count, Q
 from django.http import StreamingHttpResponse
-from django.shortcuts import render
+from django.shortcuts import get_object_or_404, render
 from django.utils import timezone
 from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
@@ -162,11 +162,23 @@ class ScholarshipDetailView(generics.RetrieveUpdateDestroyAPIView):
         context["today"] = timezone.now().date()
         return context
 
+    def get_object(self):
+        # Public URLs carry the slug; numeric lookups stay supported for old
+        # bookmarks and links in already-delivered digest emails.
+        lookup = str(self.kwargs["lookup"])
+        queryset = self.get_queryset()
+        if lookup.isdigit():
+            obj = get_object_or_404(queryset, pk=int(lookup))
+        else:
+            obj = get_object_or_404(queryset, slug=lookup)
+        self.check_object_permissions(self.request, obj)
+        return obj
+
     def retrieve(self, request, *args, **kwargs):
-        pk = kwargs["pk"]
+        lookup = kwargs["lookup"]
         is_admin = role_for(request.user)["is_admin"]
-        etag = etag_for(NS_SCHOLARSHIPS, detail=pk, admin=is_admin)
-        key = make_key(NS_SCHOLARSHIPS, "detail", pk=pk, admin=is_admin)
+        etag = etag_for(NS_SCHOLARSHIPS, detail=lookup, admin=is_admin)
+        key = make_key(NS_SCHOLARSHIPS, "detail", lookup=lookup, admin=is_admin)
 
         payload = cached(
             key,
@@ -1315,7 +1327,7 @@ API_INFO = {
         },
         "scholarships": {
             "list": "/api/scholarships/",
-            "detail": "/api/scholarships/{id}/",
+            "detail": "/api/scholarships/{slug}/",
             "facets": "/api/scholarships/facets/",
         },
         "admin": {

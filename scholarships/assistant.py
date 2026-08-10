@@ -663,6 +663,7 @@ def _personalized_assessment(answers):
             picks.append(
                 {
                     "id": row.pk,
+                    "slug": row.slug,
                     "name": row.name,
                     "host_country": row.host_country,
                     "degree_level": row.degree_level,

@@ -6,7 +6,7 @@ now, so take a look and see which one fits your dream.
 {% for scholarship in scholarships %}
 * {{ scholarship.name }}
   {{ scholarship.host_country }} · {{ scholarship.degree_level }} · apply by {{ scholarship.deadline|date:"j M Y" }}
-  {{ frontend_url }}/scholarships/{{ scholarship.id }}
+  {{ frontend_url }}/scholarships/{{ scholarship.slug }}
 {% endfor %}
 These are just a few of the opportunities on the board. New
 scholarships are added all the time, so explore the full list and

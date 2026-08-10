@@ -15,8 +15,11 @@ urlpatterns = [
         views.scholarship_facets,
         name="scholarship-facets",
     ),
+    # Matches both the public slug ("chevening-scholarship") and, for old
+    # bookmarks and already-sent digest emails, a numeric id. Must stay below
+    # scholarships/facets/ so "facets" is never treated as a slug.
     path(
-        "scholarships/<int:pk>/",
+        "scholarships/<slug:lookup>/",
         views.ScholarshipDetailView.as_view(),
         name="scholarship-detail",
     ),

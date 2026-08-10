@@ -39,6 +39,7 @@ class ScholarshipListSerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "name",
+            "slug",
             "deadline",
             "host_country",
             "degree_level",
@@ -64,7 +65,8 @@ class ScholarshipSerializer(serializers.ModelSerializer):
     class Meta:
         model = Scholarship
         fields = "__all__"
-        read_only_fields = ("id", "created_at", "updated_at")
+        # slug is server-generated from the name; clients never set it.
+        read_only_fields = ("id", "slug", "created_at", "updated_at")
 
     def get_is_open(self, obj):
         today = self.context.get("today") or timezone.now().date()

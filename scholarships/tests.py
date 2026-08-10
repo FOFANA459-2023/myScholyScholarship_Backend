@@ -158,6 +158,34 @@ class ScholarshipListTests(TestCase):
         )
         self.assertIn(response.status_code, (401, 403))
 
+    def test_detail_readable_by_slug(self):
+        visible = Scholarship.objects.get(name="Chevening")
+        self.assertEqual(visible.slug, "chevening")
+        response = self.client.get(f"/api/scholarships/{visible.slug}/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["id"], visible.pk)
+
+    def test_hidden_scholarship_is_not_readable_by_slug(self):
+        hidden = Scholarship.objects.get(name="Hidden Award")
+        self.assertEqual(
+            self.client.get(f"/api/scholarships/{hidden.slug}/").status_code, 404
+        )
+
+    def test_slugs_are_unique_and_never_numeric(self):
+        first = Scholarship.objects.get(name="Chevening")
+        second = make_scholarship(name="Chevening")
+        self.assertEqual(second.slug, f"{first.slug}-2")
+        numeric = make_scholarship(name="2026")
+        self.assertFalse(numeric.slug.isdigit())
+        self.assertEqual(
+            self.client.get(f"/api/scholarships/{numeric.slug}/").status_code, 200
+        )
+
+    def test_list_payload_includes_slug(self):
+        row = self.client.get("/api/scholarships/").json()["results"][0]
+        self.assertIn("slug", row)
+        self.assertTrue(row["slug"])
+
 
 class AuthTests(TestCase):
     def setUp(self):
@@ -538,7 +566,7 @@ class TransactionalEmailTests(TestCase):
             self.assertIn(row.name, message.body)
             # Links go to our own detail page, never the official site -
             # students should read about the scholarship on the board first.
-            detail = f"{settings.FRONTEND_URL}/scholarships/{row.pk}"
+            detail = f"{settings.FRONTEND_URL}/scholarships/{row.slug}"
             self.assertIn(detail, message.body)
             self.assertNotIn(row.link, message.body)
             self.assertIn(row.name, html)

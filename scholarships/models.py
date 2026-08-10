@@ -1,6 +1,21 @@
 from django.contrib.auth.models import User
 from django.db import models
 from django.utils import timezone
+from django.utils.text import slugify
+
+
+def scholarship_base_slug(name):
+    """Slugified name, guaranteed non-empty and never purely numeric.
+
+    A purely numeric slug would be indistinguishable from a primary key in
+    ``/api/scholarships/<lookup>/``, where digits mean "look up by id".
+    """
+    base = slugify(name)[:260].strip("-")
+    if not base:
+        return "scholarship"
+    if base.isdigit():
+        return f"scholarship-{base}"
+    return base
 
 
 class ScholarshipQuerySet(models.QuerySet):
@@ -18,6 +33,7 @@ class ScholarshipQuerySet(models.QuerySet):
         return self.only(
             "id",
             "name",
+            "slug",
             "deadline",
             "host_country",
             "degree_level",
@@ -30,6 +46,10 @@ class ScholarshipQuerySet(models.QuerySet):
 
 class Scholarship(models.Model):
     name = models.CharField(max_length=255, db_index=True)
+    # Public detail URLs use the slug so students see the scholarship name,
+    # not a database id. Set once on create and kept stable across renames so
+    # shared/bookmarked links never break.
+    slug = models.SlugField(max_length=280, unique=True, blank=True)
     description = models.TextField()
     deadline = models.DateField()
     host_country = models.CharField(max_length=100)
@@ -64,6 +84,18 @@ class Scholarship(models.Model):
 
     def __str__(self):
         return self.name
+
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            base = scholarship_base_slug(self.name)
+            slug = base
+            n = 2
+            taken = Scholarship.objects.exclude(pk=self.pk)
+            while taken.filter(slug=slug).exists():
+                slug = f"{base}-{n}"
+                n += 1
+            self.slug = slug
+        super().save(*args, **kwargs)
 
     @property
     def is_open(self):
