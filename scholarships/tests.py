@@ -186,6 +186,20 @@ class ScholarshipListTests(TestCase):
         self.assertIn("slug", row)
         self.assertTrue(row["slug"])
 
+    def test_social_card_renders_png(self):
+        visible = Scholarship.objects.get(name="Chevening")
+        response = self.client.get(f"/api/scholarships/{visible.slug}/card.png")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "image/png")
+        self.assertTrue(response.content.startswith(b"\x89PNG"))
+
+    def test_social_card_hidden_scholarship_404s(self):
+        hidden = Scholarship.objects.get(name="Hidden Award")
+        self.assertEqual(
+            self.client.get(f"/api/scholarships/{hidden.slug}/card.png").status_code,
+            404,
+        )
+
 
 class AuthTests(TestCase):
     def setUp(self):

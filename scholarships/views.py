@@ -23,7 +23,7 @@ from django.contrib.auth.tokens import default_token_generator
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Count, Q
-from django.http import StreamingHttpResponse
+from django.http import HttpResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404, render
 from django.utils import timezone
 from django.utils.encoding import force_bytes, force_str
@@ -39,7 +39,7 @@ from rest_framework_simplejwt.token_blacklist.models import (
 )
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from . import assistant, emails
+from . import assistant, emails, social_cards
 from .cache import (
     NS_SCHOLARSHIPS,
     NS_USERS,
@@ -189,6 +189,32 @@ class ScholarshipDetailView(generics.RetrieveUpdateDestroyAPIView):
         )
         cache_control = PRIVATE_CACHE_CONTROL if is_admin else PUBLIC_CACHE_CONTROL
         return _apply_cache_headers(Response(payload), etag, cache_control)
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def scholarship_card(request, lookup):
+    """1200x630 PNG social-preview card for one scholarship.
+
+    Facebook and friends fetch this as the ``og:image`` of a shared detail
+    link. Rendering costs ~100ms, so the PNG bytes live in the version-scoped
+    cache: any scholarship write invalidates them along with everything else.
+    Hidden scholarships 404 exactly like the detail endpoint.
+    """
+    queryset = Scholarship.objects.active()
+    if str(lookup).isdigit():
+        scholarship = queryset.filter(pk=int(lookup)).first()
+    else:
+        scholarship = queryset.filter(slug=lookup).first()
+    if scholarship is None:
+        return Response(status=404)
+
+    key = make_key(NS_SCHOLARSHIPS, "card", lookup=str(lookup))
+    png = cached(key, TTL_DETAIL, lambda: social_cards.render_card(scholarship))
+    response = HttpResponse(png, content_type="image/png")
+    response["Cache-Control"] = "public, max-age=3600"
+    response["ETag"] = etag_for(NS_SCHOLARSHIPS, card=str(lookup))
+    return response
 
 
 @api_view(["GET"])

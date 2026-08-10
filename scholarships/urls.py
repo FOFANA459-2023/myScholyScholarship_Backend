@@ -15,6 +15,12 @@ urlpatterns = [
         views.scholarship_facets,
         name="scholarship-facets",
     ),
+    # Social preview card image (og:image for shared detail links).
+    path(
+        "scholarships/<slug:lookup>/card.png",
+        views.scholarship_card,
+        name="scholarship-card",
+    ),
     # Matches both the public slug ("chevening-scholarship") and, for old
     # bookmarks and already-sent digest emails, a numeric id. Must stay below
     # scholarships/facets/ so "facets" is never treated as a slug.
