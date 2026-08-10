@@ -1812,7 +1812,10 @@ class AdminMessagesTests(TestCase):
         )
         Admin.objects.create(user=self.plain_admin, is_super_admin=False)
         self.message = ContactMessage.objects.create(
-            name="Ama", email="ama@example.com", message="How do I apply for DAAD?"
+            name="Ama",
+            email="ama@example.com",
+            subject="Question about DAAD",
+            message="How do I apply for DAAD?",
         )
 
     def _outbox(self):
@@ -1980,4 +1983,41 @@ class AdminMessagesTests(TestCase):
         self.client.force_authenticate(self.plain_admin)
         self.assertEqual(
             self.client.get("/api/admin/conversations/").status_code, 403
+        )
+
+    def test_reply_defaults_to_re_plus_student_subject(self):
+        self.client.force_authenticate(self.super_admin)
+        with self.settings(RESEND_API_KEY=""):
+            self.client.post(
+                "/api/admin/conversations/ama@example.com/reply/",
+                {"body": "Here is the answer."},
+                format="json",
+            )
+        self.assertEqual(self._outbox()[-1].subject, "Re: Question about DAAD")
+
+    def test_conversation_payloads_carry_the_subject(self):
+        self.client.force_authenticate(self.super_admin)
+        inbox = self.client.get("/api/admin/conversations/").json()
+        self.assertEqual(inbox["results"][0]["last_subject"], "Question about DAAD")
+        thread = self.client.get(
+            "/api/admin/conversations/ama@example.com/"
+        ).json()
+        self.assertEqual(thread["items"][0]["subject"], "Question about DAAD")
+
+    def test_contact_form_stores_subject(self):
+        anon = APIClient()
+        response = anon.post(
+            "/api/contact/",
+            {
+                "name": "Ada",
+                "email": "ada@example.com",
+                "subject": "Essay help",
+                "message": "I would like help with my application essay.",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(
+            ContactMessage.objects.get(email="ada@example.com").subject,
+            "Essay help",
         )

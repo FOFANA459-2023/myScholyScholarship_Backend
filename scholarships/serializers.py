@@ -370,6 +370,7 @@ class AdminContactMessageSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "email",
+            "subject",
             "message",
             "created_at",
             "is_handled",
@@ -423,7 +424,7 @@ class ComposeMessageSerializer(serializers.Serializer):
 class ContactMessageSerializer(serializers.ModelSerializer):
     class Meta:
         model = ContactMessage
-        fields = ("id", "name", "email", "message", "created_at")
+        fields = ("id", "name", "email", "subject", "message", "created_at")
         read_only_fields = ("id", "created_at")
         extra_kwargs = {
             "name": {
@@ -454,6 +455,11 @@ class ContactMessageSerializer(serializers.ModelSerializer):
 
     def validate_email(self, value):
         return _clean(value).lower()
+
+    def validate_subject(self, value):
+        # Optional at the API level so pre-subject clients keep working; the
+        # form itself requires one.
+        return _clean(value)
 
     def validate_message(self, value):
         value = value.strip()

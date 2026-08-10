@@ -1395,6 +1395,15 @@ def contact_message_detail(request, pk):
     return Response(AdminContactMessageSerializer(message).data)
 
 
+def _reply_subject(message):
+    """Default reply subject: thread onto the student's own subject line."""
+    if message.subject:
+        if message.subject.lower().startswith("re:"):
+            return message.subject
+        return f"Re: {message.subject}"
+    return "Re: your message to myScholy"
+
+
 def _send_outbound(request, *, to_email, subject, body, contact_message=None):
     """Deliver one admin-composed email and record it. Shared by reply/compose.
 
@@ -1436,8 +1445,7 @@ def contact_message_reply(request, pk):
     serializer = ComposeMessageSerializer(
         data={
             "to_email": message.email,
-            "subject": request.data.get("subject")
-            or "Re: your message to myScholy",
+            "subject": request.data.get("subject") or _reply_subject(message),
             "body": request.data.get("body", ""),
         }
     )
@@ -1489,6 +1497,7 @@ def conversations(request):
             {
                 "email": row["email"],
                 "name": latest[row["email"]].name,
+                "last_subject": latest[row["email"]].subject,
                 "last_message": latest[row["email"]].message,
                 "last_at": row["last_at"],
                 "total": row["total"],
@@ -1532,6 +1541,7 @@ def conversation_detail(request, email):
                 "direction": "in",
                 "id": m.pk,
                 "name": m.name,
+                "subject": m.subject,
                 "body": m.message,
                 "created_at": m.created_at,
                 "is_handled": m.is_handled,
@@ -1573,8 +1583,7 @@ def conversation_reply(request, email):
     serializer = ComposeMessageSerializer(
         data={
             "to_email": newest.email,
-            "subject": request.data.get("subject")
-            or "Re: your message to myScholy",
+            "subject": request.data.get("subject") or _reply_subject(newest),
             "body": request.data.get("body", ""),
         }
     )

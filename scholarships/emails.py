@@ -166,11 +166,18 @@ def send_contact_notification(message):
     _deliver_async(
         "contact notification",
         to=[settings.CONTACT_INBOX],
-        subject=f"myScholy contact form: {message.name}",
+        # The student's own subject leads when they gave one, so the inbox
+        # notification and the eventual "Re: ..." reply thread together.
+        subject=(
+            f"myScholy contact form: {message.subject}"
+            if message.subject
+            else f"myScholy contact form: {message.name}"
+        ),
         template="contact-notification",
         context={
             "name": message.name,
             "email": message.email,
+            "subject": message.subject,
             "received_at": f"{message.created_at:%d %b %Y %H:%M} UTC",
             "message": message.message,
         },

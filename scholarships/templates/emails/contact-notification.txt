@@ -1,6 +1,7 @@
 {% autoescape off %}New contact form message
 
 From: {{ name }} <{{ email }}>
+Subject: {{ subject }}
 Received: {{ received_at }}
 
 {{ message }}

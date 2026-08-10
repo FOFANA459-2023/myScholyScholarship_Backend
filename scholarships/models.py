@@ -171,6 +171,9 @@ class ContactMessage(models.Model):
 
     name = models.CharField(max_length=120)
     email = models.EmailField()
+    # blank=True keeps rows submitted before the form had a subject valid;
+    # the frontend requires one on every new submission.
+    subject = models.CharField(max_length=200, blank=True)
     message = models.TextField()
     created_at = models.DateTimeField(auto_now_add=True)
     is_handled = models.BooleanField(default=False)
