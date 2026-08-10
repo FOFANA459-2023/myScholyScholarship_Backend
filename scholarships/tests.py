@@ -194,8 +194,9 @@ class ScholarshipListTests(TestCase):
         self.assertTrue(response.content.startswith(b"\x89PNG"))
 
     def test_social_card_variants(self):
-        from PIL import Image
         from io import BytesIO
+
+        from PIL import Image
 
         visible = Scholarship.objects.get(name="Chevening")
         for variant, size in (("square", (1080, 1080)), ("linkedin", (1200, 627))):
@@ -224,11 +225,11 @@ class ScholarshipListTests(TestCase):
 
     def test_similar_ranks_matching_country_and_degree_first(self):
         target = Scholarship.objects.get(name="Chevening")  # UK, Masters
-        best = make_scholarship(
+        make_scholarship(
             name="Rhodes Scholarship", host_country="United Kingdom",
             degree_level="Masters", link="https://example.com/rhodes",
         )
-        weaker = make_scholarship(
+        make_scholarship(
             name="DAAD Grant", host_country="Germany",
             degree_level="Bachelors", link="https://example.com/daad",
         )
