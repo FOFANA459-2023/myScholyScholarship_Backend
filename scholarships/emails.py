@@ -147,6 +147,21 @@ def send_scholarship_digest_email(*, to, first_name, scholarships):
     )
 
 
+def send_admin_message(*, to, subject, body):
+    """One email composed on the super-admin messages screen.
+
+    Synchronous on purpose, unlike the fire-and-forget helpers above: the
+    admin pressing "Send" needs to know delivery failed, so the exception
+    propagates to the view instead of dying in a background thread.
+    """
+    _deliver(
+        to=[to],
+        subject=subject,
+        template="admin-message",
+        context={"subject": subject, "body": body},
+    )
+
+
 def send_contact_notification(message):
     _deliver_async(
         "contact notification",

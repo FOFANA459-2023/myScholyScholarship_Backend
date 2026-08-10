@@ -78,6 +78,17 @@ urlpatterns = [
     path("admin/users/", views.admin_user_directory, name="admin-user-directory"),
     path("admin/users/export/", views.export_users_csv, name="export-users-csv"),
     path("admin/contact/", views.contact_messages, name="admin-contact-messages"),
+    path(
+        "admin/contact/<int:pk>/",
+        views.contact_message_detail,
+        name="admin-contact-message-detail",
+    ),
+    path(
+        "admin/contact/<int:pk>/reply/",
+        views.contact_message_reply,
+        name="admin-contact-message-reply",
+    ),
+    path("admin/messages/", views.outbound_messages, name="admin-messages"),
     # Public contact form
     path("contact/", views.contact_message, name="contact-message"),
     # Site assistant (Gemini-backed popup bot)

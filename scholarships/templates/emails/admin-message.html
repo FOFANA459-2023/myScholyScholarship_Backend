@@ -1,0 +1,89 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+{# Hand-written Django template - NOT exported from emails/. Wraps a message #}
+{# composed on the super-admin messages screen in the standard brand chrome. #}
+{# The body is typed by an admin; auto-escaping plus linebreaksbr keeps it #}
+{# safe while preserving paragraphs. #}
+<html dir="ltr" lang="en">
+  <head>
+    <meta content="text/html; charset=UTF-8" http-equiv="Content-Type" />
+    <meta name="x-apple-disable-message-reformatting" />
+  </head>
+  <div
+    style="display:none;overflow:hidden;line-height:1px;opacity:0;max-height:0;max-width:0"
+    data-skip-in-text="true">
+    A message from the myScholy team.
+  </div>
+  <body style="background-color:#f1f5f9;margin:0;padding:0">
+    <table border="0" width="100%" cellpadding="0" cellspacing="0" role="presentation" align="center">
+      <tbody>
+        <tr>
+          <td style="background-color:#f1f5f9;font-family:Inter, ui-sans-serif, system-ui, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;margin:0;padding:24px 12px">
+            <table align="center" width="100%" border="0" cellpadding="0" cellspacing="0" role="presentation"
+              style="max-width:560px;background-color:#ffffff;border-radius:12px;border:1px solid #e2e8f0;margin:0 auto;overflow:hidden">
+              <tbody>
+                <tr style="width:100%">
+                  <td>
+                    <table align="center" width="100%" border="0" cellpadding="0" cellspacing="0" role="presentation"
+                      style="background-color:#0284c7;background-image:linear-gradient(to bottom, #0ea5e9 0%, #0284c7 100%);border-bottom:3px solid #eab308;padding:16px 28px">
+                      <tbody>
+                        <tr>
+                          <td>
+                            <a href="{{ frontend_url }}" style="text-decoration:none" target="_blank"
+                              ><img alt="myScholy" height="44" src="{{ frontend_url }}/email-logo-tile.png"
+                                style="display:inline-block;outline:none;border:none;text-decoration:none;vertical-align:middle;border-radius:12px"
+                                width="44" /><span
+                                style="color:#ffffff;font-size:20px;font-weight:700;letter-spacing:-0.01em;margin:0;vertical-align:middle;display:inline-block;padding-left:12px"
+                                >myScholy</span></a>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                    <table align="center" width="100%" border="0" cellpadding="0" cellspacing="0" role="presentation" style="padding:32px">
+                      <tbody>
+                        <tr>
+                          <td>
+                            <h1 style="color:#0f172a;font-size:20px;font-weight:700;line-height:28px;margin:0 0 16px">
+                              {{ subject }}
+                            </h1>
+                            <p style="font-size:15px;line-height:24px;color:#334155;margin:0 0 16px">
+                              {{ body|linebreaksbr }}
+                            </p>
+                            <hr style="width:100%;border:none;border-top:1px solid #e2e8f0;margin:24px 0" />
+                            <p style="font-size:13px;line-height:20px;color:#64748b;margin:0 0 8px">
+                              This message was sent to you by the myScholy team.
+                              Reply to this email to continue the conversation.
+                            </p>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                    <table align="center" width="100%" border="0" cellpadding="0" cellspacing="0" role="presentation"
+                      style="background-color:#f8fafc;border-top:1px solid #e2e8f0;padding:18px 32px 20px;text-align:center">
+                      <tbody>
+                        <tr>
+                          <td>
+                            <p style="font-size:13px;line-height:20px;color:#64748b;margin:0 0 8px">
+                              <a href="{{ frontend_url }}/scholarships" style="color:#64748b;text-decoration:underline" target="_blank">Browse scholarships</a>
+                              ·
+                              <a href="{{ frontend_url }}/contact" style="color:#64748b;text-decoration:underline" target="_blank">Contact us</a>
+                            </p>
+                            <p style="font-size:12px;line-height:18px;color:#94a3b8;margin:0 0 4px">
+                              © {{ year }} myScholy. Scholarships for students worldwide.
+                            </p>
+                            <p style="font-size:12px;line-height:18px;color:#94a3b8;margin:0 0 4px">
+                              <a href="{{ frontend_url }}" style="color:#94a3b8;text-decoration:none" target="_blank">{{ frontend_url }}</a>
+                            </p>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </body>
+</html>

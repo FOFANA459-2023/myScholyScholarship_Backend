@@ -60,13 +60,16 @@ from .filters import (
     category_facets,
     normalize_params,
 )
-from .models import Admin, ContactMessage, Scholarship, Student
+from .models import Admin, ContactMessage, OutboundMessage, Scholarship, Student
 from .pagination import ScholarshipPagination
 from .permissions import IsAdmin, IsAdminOrReadOnly, IsSuperAdmin, role_for
 from .serializers import (
+    AdminContactMessageSerializer,
     AdminSerializer,
+    ComposeMessageSerializer,
     ContactMessageSerializer,
     LoginSerializer,
+    OutboundMessageSerializer,
     PasswordResetConfirmSerializer,
     PasswordResetRequestSerializer,
     ScholarshipListSerializer,
@@ -1367,11 +1370,105 @@ def contact_message(request):
 @api_view(["GET"])
 @permission_classes([IsAdmin])
 def contact_messages(request):
-    queryset = ContactMessage.objects.all()
+    queryset = ContactMessage.objects.prefetch_related("replies").all()
+    if request.query_params.get("status") == "open":
+        queryset = queryset.filter(is_handled=False)
     paginator = ScholarshipPagination()
     page = paginator.paginate_queryset(queryset, request)
     return paginator.get_paginated_response(
-        ContactMessageSerializer(page, many=True).data
+        AdminContactMessageSerializer(page, many=True).data
+    )
+
+
+@api_view(["PATCH"])
+@permission_classes([IsSuperAdmin])
+def contact_message_detail(request, pk):
+    """Toggle a message's handled flag from the messages screen."""
+    message = ContactMessage.objects.filter(pk=pk).first()
+    if message is None:
+        return Response(status=404)
+    is_handled = request.data.get("is_handled")
+    if not isinstance(is_handled, bool):
+        return Response({"error": "is_handled must be true or false."}, status=400)
+    message.is_handled = is_handled
+    message.save(update_fields=["is_handled"])
+    return Response(AdminContactMessageSerializer(message).data)
+
+
+def _send_outbound(request, *, to_email, subject, body, contact_message=None):
+    """Deliver one admin-composed email and record it. Shared by reply/compose.
+
+    Delivery is synchronous and failures surface as a 502: the admin pressing
+    "Send" must know the message did not go out. The history row is written
+    only after delivery succeeds.
+    """
+    try:
+        emails.send_admin_message(to=to_email, subject=subject, body=body)
+    except Exception:
+        logger.exception("Admin message to %s failed", to_email)
+        return Response(
+            {
+                "error": "The email could not be sent. Check the address and "
+                "try again in a moment."
+            },
+            status=502,
+        )
+    sent = OutboundMessage.objects.create(
+        contact_message=contact_message,
+        to_email=to_email,
+        subject=subject,
+        body=body,
+        sent_by=request.user,
+    )
+    if contact_message is not None and not contact_message.is_handled:
+        contact_message.is_handled = True
+        contact_message.save(update_fields=["is_handled"])
+    return Response(OutboundMessageSerializer(sent).data, status=201)
+
+
+@api_view(["POST"])
+@permission_classes([IsSuperAdmin])
+def contact_message_reply(request, pk):
+    """Email a reply to a contact-form message and mark it handled."""
+    message = ContactMessage.objects.filter(pk=pk).first()
+    if message is None:
+        return Response(status=404)
+    serializer = ComposeMessageSerializer(
+        data={
+            "to_email": message.email,
+            "subject": request.data.get("subject")
+            or "Re: your message to myScholy",
+            "body": request.data.get("body", ""),
+        }
+    )
+    serializer.is_valid(raise_exception=True)
+    return _send_outbound(
+        request,
+        to_email=serializer.validated_data["to_email"],
+        subject=serializer.validated_data["subject"],
+        body=serializer.validated_data["body"],
+        contact_message=message,
+    )
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsSuperAdmin])
+def outbound_messages(request):
+    """GET: sent-mail history. POST: compose and send a new email."""
+    if request.method == "GET":
+        paginator = ScholarshipPagination()
+        page = paginator.paginate_queryset(OutboundMessage.objects.all(), request)
+        return paginator.get_paginated_response(
+            OutboundMessageSerializer(page, many=True).data
+        )
+
+    serializer = ComposeMessageSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    return _send_outbound(
+        request,
+        to_email=serializer.validated_data["to_email"],
+        subject=serializer.validated_data["subject"],
+        body=serializer.validated_data["body"],
     )
 
 

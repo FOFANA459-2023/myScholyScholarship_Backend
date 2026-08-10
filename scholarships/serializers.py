@@ -15,7 +15,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
 from rest_framework import serializers
 
-from .models import Admin, ContactMessage, Scholarship, Student
+from .models import Admin, ContactMessage, OutboundMessage, Scholarship, Student
 
 # Permissive on purpose: digits, spaces, dashes, brackets and an optional
 # leading +. Real-world numbers vary far too much to pin down further, and a
@@ -334,6 +334,89 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 "Your password needs at least 8 characters."
             )
+        return value
+
+
+class OutboundMessageSerializer(serializers.ModelSerializer):
+    """Sent-mail history rows on the admin messages screen."""
+
+    sent_by = serializers.SerializerMethodField()
+
+    class Meta:
+        model = OutboundMessage
+        fields = (
+            "id",
+            "contact_message",
+            "to_email",
+            "subject",
+            "body",
+            "sent_by",
+            "created_at",
+        )
+        read_only_fields = fields
+
+    def get_sent_by(self, obj):
+        return obj.sent_by.username if obj.sent_by else None
+
+
+class AdminContactMessageSerializer(serializers.ModelSerializer):
+    """Inbox rows for the admin messages screen, replies included."""
+
+    replies = OutboundMessageSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = ContactMessage
+        fields = (
+            "id",
+            "name",
+            "email",
+            "message",
+            "created_at",
+            "is_handled",
+            "replies",
+        )
+        read_only_fields = fields
+
+
+class ComposeMessageSerializer(serializers.Serializer):
+    """Validation for sending mail from the admin messages screen."""
+
+    to_email = serializers.EmailField(
+        error_messages={
+            "invalid": "That doesn't look like a valid email address - check for typos.",
+            "blank": "Enter the recipient's email address.",
+            "required": "Enter the recipient's email address.",
+        }
+    )
+    subject = serializers.CharField(
+        max_length=200,
+        error_messages={
+            "blank": "Give the message a subject.",
+            "required": "Give the message a subject.",
+            "max_length": "Keep the subject under 200 characters.",
+        },
+    )
+    body = serializers.CharField(
+        error_messages={
+            "blank": "Write the message before sending.",
+            "required": "Write the message before sending.",
+        }
+    )
+
+    def validate_body(self, value):
+        value = value.strip()
+        if len(value) < 2:
+            raise serializers.ValidationError("Write the message before sending.")
+        if len(value) > 10000:
+            raise serializers.ValidationError(
+                "That message is too long (10000 characters maximum)."
+            )
+        return value
+
+    def validate_subject(self, value):
+        value = _clean(value)
+        if not value:
+            raise serializers.ValidationError("Give the message a subject.")
         return value
 
 

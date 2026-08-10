@@ -183,3 +183,35 @@ class ContactMessage(models.Model):
 
     def __str__(self):
         return f"{self.name} <{self.email}>"
+
+
+class OutboundMessage(models.Model):
+    """An email sent from the super-admin messages screen.
+
+    Covers both shapes of sending: a reply to a contact-form message (the
+    ``contact_message`` FK is set, and sending one marks it handled) and a
+    freshly composed email to any address (FK empty). Rows are the sent-mail
+    history the dashboard shows; the actual delivery goes through
+    ``emails.send_admin_message`` from ``DEFAULT_FROM_EMAIL``.
+    """
+
+    contact_message = models.ForeignKey(
+        ContactMessage,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="replies",
+    )
+    to_email = models.EmailField()
+    subject = models.CharField(max_length=200)
+    body = models.TextField()
+    sent_by = models.ForeignKey(
+        User, null=True, blank=True, on_delete=models.SET_NULL
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"To {self.to_email}: {self.subject}"

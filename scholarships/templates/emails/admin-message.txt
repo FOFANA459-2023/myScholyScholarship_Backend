@@ -1,0 +1,8 @@
+{% autoescape off %}{{ subject }}
+
+{{ body }}
+
+--
+Sent by the myScholy team. Reply to this email to continue the conversation.
+{{ frontend_url }}
+{% endautoescape %}

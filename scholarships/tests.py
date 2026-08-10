@@ -9,7 +9,14 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from .models import Admin, ContactMessage, DigestRun, Scholarship, Student
+from .models import (
+    Admin,
+    ContactMessage,
+    DigestRun,
+    OutboundMessage,
+    Scholarship,
+    Student,
+)
 
 
 def make_scholarship(**overrides):
@@ -1786,3 +1793,115 @@ class SecureDefaultsTests(TestCase):
         self.assertTrue(settings_module.CSRF_COOKIE_SECURE)
         self.assertTrue(settings_module.SECURE_CONTENT_TYPE_NOSNIFF)
         self.assertEqual(settings_module.X_FRAME_OPTIONS, "DENY")
+
+
+class AdminMessagesTests(TestCase):
+    """The super-admin messages screen: reply to contact messages, compose
+    new mail, and the sent history. Everything sends from DEFAULT_FROM_EMAIL
+    (the myScholy address) - never from a personal account."""
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.super_admin = User.objects.create_user(
+            username="root", password="Str0ngPassw0rd!", is_staff=True
+        )
+        Admin.objects.create(user=self.super_admin, is_super_admin=True)
+        self.plain_admin = User.objects.create_user(
+            username="editor", password="Str0ngPassw0rd!", is_staff=True
+        )
+        Admin.objects.create(user=self.plain_admin, is_super_admin=False)
+        self.message = ContactMessage.objects.create(
+            name="Ama", email="ama@example.com", message="How do I apply for DAAD?"
+        )
+
+    def _outbox(self):
+        from django.core import mail
+
+        return mail.outbox
+
+    def test_reply_sends_marks_handled_and_records(self):
+        self.client.force_authenticate(self.super_admin)
+        with self.settings(RESEND_API_KEY=""):
+            response = self.client.post(
+                f"/api/admin/contact/{self.message.pk}/reply/",
+                {"body": "Hi Ama, start at the DAAD page on our board."},
+                format="json",
+            )
+        self.assertEqual(response.status_code, 201)
+        sent = self._outbox()[-1]
+        self.assertEqual(sent.to, ["ama@example.com"])
+        self.assertEqual(sent.from_email, settings.DEFAULT_FROM_EMAIL)
+        self.assertIn("DAAD", sent.body)
+        self.message.refresh_from_db()
+        self.assertTrue(self.message.is_handled)
+        record = OutboundMessage.objects.get()
+        self.assertEqual(record.contact_message, self.message)
+        self.assertEqual(record.sent_by, self.super_admin)
+
+    def test_reply_requires_super_admin(self):
+        self.client.force_authenticate(self.plain_admin)
+        response = self.client.post(
+            f"/api/admin/contact/{self.message.pk}/reply/",
+            {"body": "should not send"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(OutboundMessage.objects.count(), 0)
+
+    def test_compose_sends_and_appears_in_history(self):
+        self.client.force_authenticate(self.super_admin)
+        with self.settings(RESEND_API_KEY=""):
+            response = self.client.post(
+                "/api/admin/messages/",
+                {
+                    "to_email": "partner@example.com",
+                    "subject": "Partnership",
+                    "body": "Hello from the myScholy team.",
+                },
+                format="json",
+            )
+        self.assertEqual(response.status_code, 201)
+        history = self.client.get("/api/admin/messages/").json()
+        self.assertEqual(history["count"], 1)
+        row = history["results"][0]
+        self.assertEqual(row["to_email"], "partner@example.com")
+        self.assertIsNone(row["contact_message"])
+        self.assertEqual(row["sent_by"], "root")
+
+    def test_compose_validates_input(self):
+        self.client.force_authenticate(self.super_admin)
+        response = self.client.post(
+            "/api/admin/messages/",
+            {"to_email": "not-an-email", "subject": "", "body": ""},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(len(self._outbox()), 0)
+
+    def test_inbox_includes_replies_and_handled_flag(self):
+        self.client.force_authenticate(self.super_admin)
+        with self.settings(RESEND_API_KEY=""):
+            self.client.post(
+                f"/api/admin/contact/{self.message.pk}/reply/",
+                {"body": "Answered."},
+                format="json",
+            )
+        inbox = self.client.get("/api/admin/contact/").json()
+        row = inbox["results"][0]
+        self.assertTrue(row["is_handled"])
+        self.assertEqual(len(row["replies"]), 1)
+        self.assertEqual(
+            self.client.get("/api/admin/contact/?status=open").json()["count"], 0
+        )
+
+    def test_toggle_handled(self):
+        self.client.force_authenticate(self.super_admin)
+        response = self.client.patch(
+            f"/api/admin/contact/{self.message.pk}/",
+            {"is_handled": True},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.message.refresh_from_db()
+        self.assertTrue(self.message.is_handled)
