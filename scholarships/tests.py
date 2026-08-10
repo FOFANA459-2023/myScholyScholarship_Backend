@@ -1069,9 +1069,14 @@ class AssistantTests(TestCase):
             host_country="Japan",
             deadline=timezone.now().date() - timedelta(days=1),
         )
-        context = _context_scholarships("scholarships in Japan please")
+        count, context = _context_scholarships("scholarships in Japan please")
         self.assertIn("Tokyo Tech Award", context)
         self.assertNotIn("Closed Japan Award", context)
+        # The matching row leads the context, and every listing carries its
+        # on-site detail link so replies can point visitors to it.
+        self.assertTrue(context.lstrip("- ").startswith("Tokyo Tech Award"))
+        self.assertIn("/scholarships/tokyo-tech-award", context)
+        self.assertGreaterEqual(count, 1)
 
 
 class AssistantExtractTests(TestCase):

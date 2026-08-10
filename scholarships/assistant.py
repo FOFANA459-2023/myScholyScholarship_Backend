@@ -60,40 +60,70 @@ GEMINI_ENDPOINT = (
     "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 )
 
-# How many scholarships to hand the model as context. Kept small so free-tier
-# token budgets last; the list endpoint remains the place to browse everything.
-MAX_CONTEXT_SCHOLARSHIPS = 8
+# How many scholarships to hand the model as context. Covers the whole board
+# at its current size, so the assistant genuinely knows every live listing.
+MAX_CONTEXT_SCHOLARSHIPS = 25
 MAX_HISTORY_TURNS = 10
 
+# Bump whenever SYSTEM_PROMPT or the context format changes: it is part of the
+# reply-cache key, so cached answers written under the old prompt are dropped.
+PROMPT_VERSION = 2
+
 SYSTEM_PROMPT = """\
-You are the myScholy assistant, a friendly helper embedded on myscholy.pages.dev,
-a free scholarship board that lists fully funded scholarships worldwide.
+You are the myScholy assistant, a friendly helper embedded on every page of
+myscholy.pages.dev - a free scholarship board that lists fully funded
+scholarships, fellowships, summits and programs worldwide. You know the whole
+site; guide visitors to the exact page that helps them.
 
-About the site, so you can guide visitors:
-- Home page: highlights and a FAQ section (/#faq).
-- Scholarships page (/scholarships): browse every live listing; filter by host
-  country and degree level, search by name, and sort by deadline. Each listing
-  links to the official application page.
-- Services: Consulting (/consulting) and myScholy Academy (/academy).
-- Contact page (/contact): a form that reaches the myScholy team directly.
-- Accounts: students can sign up (/signup) and log in (/login) for free.
-  Password reset is available at /forgot-password - it emails a single-use
-  link that expires after one hour.
-- Everything is free: free to browse, free to apply.
+THE SITE, PAGE BY PAGE:
+- Home (/): hero, university carousel, roadmap of how myScholy helps, and the
+  FAQ section (/#faq). The hero has a "Join our community" button that opens
+  the myScholy WhatsApp community.
+- Scholarship board (/scholarships): every live listing as cards. Visitors can
+  search by name, country or degree level, filter by region (Africa, Europe,
+  Asia, United States, Canada, Australia) and by degree level (Undergraduate,
+  Graduate, Postgraduate, Non-degree), and sort by newest, deadline or name.
+  Filters live in the URL, so a filtered view can be shared as a link.
+- Scholarship detail (/scholarships/<slug>): the full description, who can
+  apply (eligibility), what's covered (benefits), the deadline with a
+  countdown, an "Apply on the official page" button, and a strip of similar
+  scholarships that are still open.
+- Eligibility assessment (/assessment): a short quiz; the site then suggests
+  live scholarships that fit the visitor's profile.
+- Consulting (/consulting) and myScholy Academy (/academy): the site's
+  services pages.
+- Contact (/contact): a form (name, email, subject, message) that reaches the
+  myScholy team directly; the team replies by email from the myScholy address
+  using the visitor's own subject line. The page also shows the team email
+  (myscholy@gmail.com) and a WhatsApp link.
+- WhatsApp community (/whatsapp): free real-time scholarship alerts and
+  application tips; signing in unlocks the invite link.
+- Accounts: sign up (/signup) and log in (/login) are free. Signed-in students
+  receive a recurring email digest of live scholarships they can still apply
+  for. Password reset lives at /forgot-password - it emails a single-use link
+  that expires after one hour.
+- Everything on myScholy is free: free to browse, free to apply, no fees ever.
 
-Rules:
+RULES:
 - Answer questions about myScholy, the scholarships listed below, studying
   abroad, and scholarship applications in general. For unrelated topics, say
   you can only help with myScholy and scholarships.
 - When recommending scholarships, use ONLY the listings provided below - never
   invent scholarships, deadlines or links. If nothing below fits, say so and
   point the visitor to /scholarships to browse or /contact to ask the team.
-- Be concise: a few sentences or a short list. Plain text only, no markdown.
+- Link every scholarship you mention to its page on the site using its
+  "Details" path (e.g. [Chevening Scholarship](/scholarships/chevening)), so
+  the visitor reads it on myScholy first. Only give the official "Apply" URL
+  when the visitor asks how or where to apply.
+- FORMAT for readability: short paragraphs (1-3 sentences), markdown bullet
+  lists when comparing or listing options, **bold** for scholarship names and
+  deadlines, and markdown links written as [text](url). Never use headings,
+  tables or code blocks - this renders in a small chat window.
 - Never ask for passwords or personal details.
 
 Today's date is {today}.
 
-Current live scholarships matching the visitor's question:
+LIVE SCHOLARSHIPS ON THE BOARD RIGHT NOW ({count} open listings):
 {context}
 """
 
@@ -106,46 +136,43 @@ class AssistantError(Exception):
         self.retryable = retryable
 
 
+def _summ(text, limit=180):
+    flat = " ".join(str(text or "").split())
+    return flat if len(flat) <= limit else flat[: limit - 3] + "..."
+
+
 def _context_scholarships(message):
-    """Live listings that look relevant to the question, nearest deadline first.
+    """Every live listing, with the ones matching the question listed first.
 
-    Cheap keyword matching is enough here: the model does the actual reasoning,
-    it just needs real rows to reason over. Falls back to the soonest-closing
-    listings when nothing matches so the model always has genuine data.
+    The board is small enough to hand the model in full, so the assistant is
+    aware of every open scholarship - the keyword match only orders them so
+    the most relevant rows sit at the top of the context. Returns
+    ``(count, text)``.
     """
-    live = Scholarship.objects.active().open_for_application().order_by("deadline")
+    live = list(
+        Scholarship.objects.active().open_for_application().order_by("deadline")
+    )
 
-    words = [w.strip(".,!?()\"'") for w in message.split()]
+    words = [w.strip(".,!?()\"'").lower() for w in message.split()]
     words = [w for w in words if len(w) >= 4]
 
-    matches = []
-    seen = set()
-    if words:
-        from django.db.models import Q
+    def relevance(row):
+        haystack = f"{row.name} {row.host_country} {row.degree_level}".lower()
+        return -sum(1 for word in words if word in haystack)
 
-        query = Q()
-        for word in words:
-            query |= (
-                Q(name__icontains=word)
-                | Q(host_country__icontains=word)
-                | Q(degree_level__icontains=word)
-            )
-        for row in live.filter(query)[:MAX_CONTEXT_SCHOLARSHIPS]:
-            matches.append(row)
-            seen.add(row.pk)
+    rows = sorted(live, key=relevance)[:MAX_CONTEXT_SCHOLARSHIPS]
+    if not rows:
+        return 0, "  (no live scholarships at the moment)"
 
-    for row in live[: MAX_CONTEXT_SCHOLARSHIPS - len(matches)]:
-        if row.pk not in seen:
-            matches.append(row)
-
-    if not matches:
-        return "  (no live scholarships at the moment)"
-
-    return "\n".join(
+    text = "\n".join(
         f"- {row.name} | Country: {row.host_country} | Degree: {row.degree_level}"
-        f" | Deadline: {row.deadline:%d %b %Y} | Apply: {row.link}"
-        for row in matches[:MAX_CONTEXT_SCHOLARSHIPS]
+        f" | Deadline: {row.deadline:%d %b %Y}"
+        f" | Details: /scholarships/{row.slug}"
+        f" | Apply: {row.link}"
+        f" | About: {_summ(row.description)}"
+        for row in rows
     )
+    return len(rows), text
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +366,7 @@ def ask(message, history):
     return _ai_cached(
         "chat",
         [
+            PROMPT_VERSION,
             get_version(NS_SCHOLARSHIPS),
             str(timezone.now().date()),
             message.strip().lower(),
@@ -349,9 +377,11 @@ def ask(message, history):
 
 
 def _ask(message, history):
+    count, context = _context_scholarships(message)
     system = SYSTEM_PROMPT.format(
         today=f"{timezone.now().date():%d %B %Y}",
-        context=_context_scholarships(message),
+        count=count,
+        context=context,
     )
 
     messages = [
