@@ -9,6 +9,7 @@ works identically on LocMemCache in development and Redis in production.
 
 import hashlib
 import json
+import time
 
 from django.core.cache import cache
 
@@ -31,12 +32,26 @@ def _version_key(namespace):
     return f"v:{namespace}"
 
 
+def _seed_version():
+    """Initial version for a namespace whose counter is missing.
+
+    Seeded from the clock rather than a constant: on LocMemCache the counter
+    vanishes on every restart, and reseeding to a fixed number would reissue
+    ETags from before the restart. Browsers holding a response from an earlier
+    deploy would then revalidate to a 304 and keep a stale body indefinitely
+    (until the next write happened to bump the version past the old one). A
+    time-based seed makes every restart a cache bust instead. On Redis the
+    counter persists, so this only runs on the very first boot.
+    """
+    return int(time.time())
+
+
 def get_version(namespace):
-    """Current version of a namespace, seeding it to 1 on first use."""
+    """Current version of a namespace, seeding it on first use."""
     key = _version_key(namespace)
     version = cache.get(key)
     if version is None:
-        version = 1
+        version = _seed_version()
         cache.set(key, version, _VERSION_TTL)
     return version
 
@@ -48,8 +63,9 @@ def bump_version(namespace):
         return cache.incr(key)
     except ValueError:
         # Key had expired or was never set - reseed it.
-        cache.set(key, 1, _VERSION_TTL)
-        return 1
+        version = _seed_version()
+        cache.set(key, version, _VERSION_TTL)
+        return version
 
 
 def make_key(namespace, name, **params):
