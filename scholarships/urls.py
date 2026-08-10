@@ -15,6 +15,12 @@ urlpatterns = [
         views.scholarship_facets,
         name="scholarship-facets",
     ),
+    # Live scholarships similar to this one (detail-page suggestions).
+    path(
+        "scholarships/<slug:lookup>/similar/",
+        views.scholarship_similar,
+        name="scholarship-similar",
+    ),
     # Social preview card image (og:image for shared detail links).
     path(
         "scholarships/<slug:lookup>/card.png",

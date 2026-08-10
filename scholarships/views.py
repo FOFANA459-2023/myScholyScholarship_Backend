@@ -39,7 +39,7 @@ from rest_framework_simplejwt.token_blacklist.models import (
 )
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from . import assistant, emails, social_cards
+from . import assistant, emails, similarity, social_cards
 from .cache import (
     NS_SCHOLARSHIPS,
     NS_USERS,
@@ -189,6 +189,38 @@ class ScholarshipDetailView(generics.RetrieveUpdateDestroyAPIView):
         )
         cache_control = PRIVATE_CACHE_CONTROL if is_admin else PUBLIC_CACHE_CONTROL
         return _apply_cache_headers(Response(payload), etag, cache_control)
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def scholarship_similar(request, lookup):
+    """Live scholarships most similar to this one, for the detail page.
+
+    Only active rows that are still open for application are considered -
+    recommending something a student cannot apply to helps no one. Cached in
+    the version-scoped namespace like every other public read.
+    """
+    queryset = Scholarship.objects.active()
+    if str(lookup).isdigit():
+        scholarship = queryset.filter(pk=int(lookup)).first()
+    else:
+        scholarship = queryset.filter(slug=lookup).first()
+    if scholarship is None:
+        return Response(status=404)
+
+    etag = etag_for(NS_SCHOLARSHIPS, similar=scholarship.pk)
+    key = make_key(NS_SCHOLARSHIPS, "similar", pk=scholarship.pk)
+
+    def build():
+        candidates = Scholarship.objects.active().open_for_application().list_fields()
+        ranked = similarity.rank_similar(scholarship, list(candidates))
+        serializer = ScholarshipListSerializer(
+            ranked, many=True, context={"today": timezone.now().date()}
+        )
+        return serializer.data
+
+    payload = cached(key, TTL_DETAIL, build)
+    return _apply_cache_headers(Response(payload), etag, PUBLIC_CACHE_CONTROL)
 
 
 @api_view(["GET"])

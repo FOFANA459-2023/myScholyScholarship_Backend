@@ -222,6 +222,46 @@ class ScholarshipListTests(TestCase):
             404,
         )
 
+    def test_similar_ranks_matching_country_and_degree_first(self):
+        target = Scholarship.objects.get(name="Chevening")  # UK, Masters
+        best = make_scholarship(
+            name="Rhodes Scholarship", host_country="United Kingdom",
+            degree_level="Masters", link="https://example.com/rhodes",
+        )
+        weaker = make_scholarship(
+            name="DAAD Grant", host_country="Germany",
+            degree_level="Bachelors", link="https://example.com/daad",
+        )
+        make_scholarship(
+            name="Expired UK Award", host_country="United Kingdom",
+            degree_level="Masters", link="https://example.com/expired",
+            deadline=timezone.now().date() - timedelta(days=1),
+        )
+        make_scholarship(
+            name="Hidden UK Award", host_country="United Kingdom",
+            degree_level="Masters", link="https://example.com/hiddenuk",
+            is_active=False,
+        )
+
+        body = self.client.get(f"/api/scholarships/{target.slug}/similar/").json()
+        names = [row["name"] for row in body]
+        # Most similar leads; expired, hidden and the scholarship itself
+        # never appear; zero-score rows still fill the strip.
+        self.assertEqual(names[0], "Rhodes Scholarship")
+        self.assertIn("DAAD Grant", names)
+        self.assertNotIn("Chevening", names)
+        self.assertNotIn("Expired UK Award", names)
+        self.assertNotIn("Hidden UK Award", names)
+        self.assertLessEqual(len(names), 4)
+        self.assertIn("slug", body[0])
+
+    def test_similar_404_for_hidden_scholarship(self):
+        hidden = Scholarship.objects.get(name="Hidden Award")
+        self.assertEqual(
+            self.client.get(f"/api/scholarships/{hidden.slug}/similar/").status_code,
+            404,
+        )
+
 
 class AuthTests(TestCase):
     def setUp(self):
