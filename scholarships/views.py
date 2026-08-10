@@ -209,11 +209,21 @@ def scholarship_card(request, lookup):
     if scholarship is None:
         return Response(status=404)
 
-    key = make_key(NS_SCHOLARSHIPS, "card", lookup=str(lookup))
-    png = cached(key, TTL_DETAIL, lambda: social_cards.render_card(scholarship))
+    # ?variant= picks the platform layout (wide/square/linkedin); anything
+    # unrecognised silently falls back to the wide default. Not named
+    # "format" - DRF reserves that query param for renderer negotiation and
+    # 404s on values it doesn't know.
+    variant = request.query_params.get("variant", social_cards.DEFAULT_VARIANT)
+    if variant not in social_cards.SIZES:
+        variant = social_cards.DEFAULT_VARIANT
+
+    key = make_key(NS_SCHOLARSHIPS, "card", lookup=str(lookup), variant=variant)
+    png = cached(
+        key, TTL_DETAIL, lambda: social_cards.render_card(scholarship, variant)
+    )
     response = HttpResponse(png, content_type="image/png")
     response["Cache-Control"] = "public, max-age=3600"
-    response["ETag"] = etag_for(NS_SCHOLARSHIPS, card=str(lookup))
+    response["ETag"] = etag_for(NS_SCHOLARSHIPS, card=str(lookup), variant=variant)
     return response
 
 

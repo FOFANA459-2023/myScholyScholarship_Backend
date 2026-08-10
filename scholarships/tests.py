@@ -193,6 +193,28 @@ class ScholarshipListTests(TestCase):
         self.assertEqual(response["Content-Type"], "image/png")
         self.assertTrue(response.content.startswith(b"\x89PNG"))
 
+    def test_social_card_variants(self):
+        from PIL import Image
+        from io import BytesIO
+
+        visible = Scholarship.objects.get(name="Chevening")
+        for variant, size in (("square", (1080, 1080)), ("linkedin", (1200, 627))):
+            response = self.client.get(
+                f"/api/scholarships/{visible.slug}/card.png?variant={variant}"
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(Image.open(BytesIO(response.content)).size, size)
+        # Unknown variants fall back to the wide default rather than erroring.
+        response = self.client.get(
+            f"/api/scholarships/{visible.slug}/card.png?variant=bogus"
+        )
+        self.assertEqual(response.status_code, 200)
+        from scholarships.social_cards import SIZES
+
+        self.assertEqual(
+            Image.open(BytesIO(response.content)).size, SIZES["wide"]
+        )
+
     def test_social_card_hidden_scholarship_404s(self):
         hidden = Scholarship.objects.get(name="Hidden Award")
         self.assertEqual(
