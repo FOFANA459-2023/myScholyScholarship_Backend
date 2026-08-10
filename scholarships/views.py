@@ -22,7 +22,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.tokens import default_token_generator
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
-from django.db.models import Count, Q
+from django.db.models import Count, Max, Q
 from django.http import HttpResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404, render
 from django.utils import timezone
@@ -1449,6 +1449,148 @@ def contact_message_reply(request, pk):
         body=serializer.validated_data["body"],
         contact_message=message,
     )
+
+
+@api_view(["GET"])
+@permission_classes([IsSuperAdmin])
+def conversations(request):
+    """Inbox grouped like an email client: one row per sender address.
+
+    Each row carries the sender's latest message (whole conversations are
+    read on their own page), how many messages the thread holds, and how many
+    still need attention.
+    """
+    grouped = (
+        ContactMessage.objects.values("email")
+        .annotate(
+            last_at=Max("created_at"),
+            total=Count("id"),
+            open_count=Count("id", filter=Q(is_handled=False)),
+        )
+        .order_by("-last_at")
+    )
+    paginator = ScholarshipPagination()
+    page = paginator.paginate_queryset(grouped, request)
+
+    emails = [row["email"] for row in page]
+    latest = {}
+    for message in ContactMessage.objects.filter(email__in=emails).order_by(
+        "created_at"
+    ):
+        latest[message.email] = message  # later rows overwrite: newest wins
+    reply_counts = dict(
+        OutboundMessage.objects.filter(to_email__in=emails)
+        .values_list("to_email")
+        .annotate(n=Count("id"))
+    )
+
+    return paginator.get_paginated_response(
+        [
+            {
+                "email": row["email"],
+                "name": latest[row["email"]].name,
+                "last_message": latest[row["email"]].message,
+                "last_at": row["last_at"],
+                "total": row["total"],
+                "open_count": row["open_count"],
+                "reply_count": reply_counts.get(row["email"], 0),
+            }
+            for row in page
+        ]
+    )
+
+
+@api_view(["GET", "PATCH"])
+@permission_classes([IsSuperAdmin])
+def conversation_detail(request, email):
+    """One sender's full exchange, oldest first, like an email thread.
+
+    ``direction`` marks who wrote each item: ``in`` for the student's
+    contact-form messages, ``out`` for admin replies sent from the myScholy
+    address. PATCH marks the whole thread handled/unhandled.
+    """
+    inbound = list(ContactMessage.objects.filter(email__iexact=email))
+    outbound = list(OutboundMessage.objects.filter(to_email__iexact=email))
+    if not inbound and not outbound:
+        return Response(status=404)
+
+    if request.method == "PATCH":
+        is_handled = request.data.get("is_handled")
+        if not isinstance(is_handled, bool):
+            return Response(
+                {"error": "is_handled must be true or false."}, status=400
+            )
+        ContactMessage.objects.filter(email__iexact=email).update(
+            is_handled=is_handled
+        )
+        for message in inbound:
+            message.is_handled = is_handled
+
+    items = sorted(
+        [
+            {
+                "direction": "in",
+                "id": m.pk,
+                "name": m.name,
+                "body": m.message,
+                "created_at": m.created_at,
+                "is_handled": m.is_handled,
+            }
+            for m in inbound
+        ]
+        + [
+            {
+                "direction": "out",
+                "id": m.pk,
+                "subject": m.subject,
+                "body": m.body,
+                "created_at": m.created_at,
+                "sent_by": m.sent_by.username if m.sent_by else None,
+            }
+            for m in outbound
+        ],
+        key=lambda item: item["created_at"],
+    )
+    newest_inbound = max(inbound, key=lambda m: m.created_at) if inbound else None
+    return Response(
+        {
+            "email": email,
+            "name": newest_inbound.name if newest_inbound else email,
+            "open_count": sum(1 for m in inbound if not m.is_handled),
+            "items": items,
+        }
+    )
+
+
+@api_view(["POST"])
+@permission_classes([IsSuperAdmin])
+def conversation_reply(request, email):
+    """Reply to a whole thread: email the sender, mark every message handled."""
+    inbound = list(ContactMessage.objects.filter(email__iexact=email))
+    if not inbound:
+        return Response(status=404)
+    newest = max(inbound, key=lambda m: m.created_at)
+    serializer = ComposeMessageSerializer(
+        data={
+            "to_email": newest.email,
+            "subject": request.data.get("subject")
+            or "Re: your message to myScholy",
+            "body": request.data.get("body", ""),
+        }
+    )
+    serializer.is_valid(raise_exception=True)
+    response = _send_outbound(
+        request,
+        to_email=serializer.validated_data["to_email"],
+        subject=serializer.validated_data["subject"],
+        body=serializer.validated_data["body"],
+        contact_message=newest,
+    )
+    if response.status_code == 201:
+        ContactMessage.objects.filter(email__iexact=email, is_handled=False).update(
+            is_handled=True
+        )
+    return response
 
 
 @api_view(["GET", "POST"])

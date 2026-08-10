@@ -89,6 +89,22 @@ urlpatterns = [
         name="admin-contact-message-reply",
     ),
     path("admin/messages/", views.outbound_messages, name="admin-messages"),
+    # Email-client style threads, grouped by sender address.
+    path(
+        "admin/conversations/",
+        views.conversations,
+        name="admin-conversations",
+    ),
+    path(
+        "admin/conversations/<str:email>/",
+        views.conversation_detail,
+        name="admin-conversation-detail",
+    ),
+    path(
+        "admin/conversations/<str:email>/reply/",
+        views.conversation_reply,
+        name="admin-conversation-reply",
+    ),
     # Public contact form
     path("contact/", views.contact_message, name="contact-message"),
     # Site assistant (Gemini-backed popup bot)

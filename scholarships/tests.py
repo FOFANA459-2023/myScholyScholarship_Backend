@@ -1905,3 +1905,79 @@ class AdminMessagesTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.message.refresh_from_db()
         self.assertTrue(self.message.is_handled)
+
+    def test_conversations_group_by_sender_with_latest_message(self):
+        ContactMessage.objects.create(
+            name="Ama", email="ama@example.com", message="Second question, newer."
+        )
+        ContactMessage.objects.create(
+            name="Kofi", email="kofi@example.com", message="Different sender."
+        )
+        self.client.force_authenticate(self.super_admin)
+        body = self.client.get("/api/admin/conversations/").json()
+        self.assertEqual(body["count"], 2)
+        by_email = {row["email"]: row for row in body["results"]}
+        ama = by_email["ama@example.com"]
+        self.assertEqual(ama["total"], 2)
+        self.assertEqual(ama["open_count"], 2)
+        self.assertEqual(ama["last_message"], "Second question, newer.")
+        # Kofi's message arrived last, so his thread leads the inbox.
+        self.assertEqual(body["results"][0]["email"], "kofi@example.com")
+
+    def test_conversation_thread_merges_directions_in_order(self):
+        self.client.force_authenticate(self.super_admin)
+        with self.settings(RESEND_API_KEY=""):
+            self.client.post(
+                "/api/admin/conversations/ama@example.com/reply/",
+                {"body": "Answer one."},
+                format="json",
+            )
+        ContactMessage.objects.create(
+            name="Ama", email="ama@example.com", message="Follow-up question."
+        )
+        thread = self.client.get(
+            "/api/admin/conversations/ama@example.com/"
+        ).json()
+        directions = [item["direction"] for item in thread["items"]]
+        self.assertEqual(directions, ["in", "out", "in"])
+        self.assertEqual(thread["name"], "Ama")
+        self.assertEqual(thread["open_count"], 1)
+
+    def test_conversation_reply_marks_every_message_handled(self):
+        ContactMessage.objects.create(
+            name="Ama", email="ama@example.com", message="Another one."
+        )
+        self.client.force_authenticate(self.super_admin)
+        with self.settings(RESEND_API_KEY=""):
+            response = self.client.post(
+                "/api/admin/conversations/ama@example.com/reply/",
+                {"body": "Covers both messages."},
+                format="json",
+            )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(
+            ContactMessage.objects.filter(
+                email="ama@example.com", is_handled=False
+            ).count(),
+            0,
+        )
+        self.assertEqual(self._outbox()[-1].to, ["ama@example.com"])
+
+    def test_conversation_patch_toggles_whole_thread(self):
+        ContactMessage.objects.create(
+            name="Ama", email="ama@example.com", message="Another one."
+        )
+        self.client.force_authenticate(self.super_admin)
+        response = self.client.patch(
+            "/api/admin/conversations/ama@example.com/",
+            {"is_handled": True},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["open_count"], 0)
+
+    def test_conversations_require_super_admin(self):
+        self.client.force_authenticate(self.plain_admin)
+        self.assertEqual(
+            self.client.get("/api/admin/conversations/").status_code, 403
+        )
