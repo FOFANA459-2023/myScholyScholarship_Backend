@@ -470,21 +470,51 @@ def _assert_public_host(url):
             raise AssistantError("That address cannot be fetched.")
 
 
+# Some WAFs reject anything without a browser User-Agent; others do the
+# opposite and reject a browser User-Agent whose TLS fingerprint does not
+# match a real browser (DAAD's, for one). No single header set satisfies
+# both camps, hence the honest-first-then-browser retry in fetch_url.
+BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/126.0.0.0 Safari/537.36"
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "application/pdf,*/*;q=0.8"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+FETCH_ERROR = "That page could not be fetched. Copy the text and paste it instead."
+
+
+def _fetch(url, headers):
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request, timeout=15) as response:
+        content_type = (response.headers.get("Content-Type") or "").lower()
+        body = response.read(MAX_FETCH_BYTES)
+    return content_type, body
+
+
 def fetch_url(url):
     """Download a scholarship page. Returns ('pdf', bytes) or ('text', str)."""
     _assert_public_host(url)
 
-    request = urllib.request.Request(
-        url, headers={"User-Agent": "Mozilla/5.0 (myScholy admin helper)"}
-    )
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            content_type = (response.headers.get("Content-Type") or "").lower()
-            body = response.read(MAX_FETCH_BYTES)
+        content_type, body = _fetch(
+            url, {"User-Agent": "Mozilla/5.0 (myScholy admin helper)"}
+        )
+    except urllib.error.HTTPError as exc:
+        if exc.code not in (401, 403, 406, 503):
+            raise AssistantError(FETCH_ERROR) from exc
+        try:
+            content_type, body = _fetch(url, BROWSER_HEADERS)
+        except (urllib.error.URLError, TimeoutError, ValueError) as retry_exc:
+            raise AssistantError(FETCH_ERROR) from retry_exc
     except (urllib.error.URLError, TimeoutError, ValueError) as exc:
-        raise AssistantError(
-            "That page could not be fetched. Copy the text and paste it instead."
-        ) from exc
+        raise AssistantError(FETCH_ERROR) from exc
 
     if "pdf" in content_type or body[:5] == b"%PDF-":
         return "pdf", body
