@@ -1,8 +1,19 @@
-# MyScholy — Backend
+# myScholy — Backend
 
-Django REST API powering the scholarship board. It is the single source of
-truth for data and authentication; Supabase is used purely as the Postgres
-host, never called directly from the browser.
+[![CI](https://github.com/FOFANA459-2023/myScholyScholarship_Backend/actions/workflows/ci.yml/badge.svg)](https://github.com/FOFANA459-2023/myScholyScholarship_Backend/actions/workflows/ci.yml)
+
+The Django REST API behind [myscholy.pages.dev](https://myscholy.pages.dev) — a scholarship board that helps students, starting with students across Africa, find opportunities they would otherwise miss. The frontend lives in its own repo: [myScholy](https://github.com/FOFANA459-2023/myScholy).
+
+This API is the single source of truth for data and authentication. Supabase is used purely as the Postgres host and is never called from the browser. I built and operate the whole stack myself; it runs in production on an Oracle Cloud VM (Gunicorn behind Caddy, managed by systemd) with a warm standby on Render sharing the same database.
+
+## What's in here
+
+- Scholarship CRUD with filtering, pagination, cached list/detail reads, and streamed CSV exports
+- JWT auth with rotating refresh tokens and role-based permissions (student, admin, super admin) backed by cached lookups
+- AI features on the Gemini API with automatic Groq failover: a site assistant, a scholarship fit assessment, and an admin auto-fill that extracts a posting form from pasted text, a link, or a PDF (with an SSRF guard on the URL fetch)
+- Transactional email (React Email templates via Resend/SMTP) and a scholarship digest that emails every student 5 live scholarships every 15 hours — guarded by a database record so two servers can never double-send
+- A version-scoped cache design where one write invalidates every derived key at once (details below), plus ETags so repeat requests get a bodyless `304`
+- CI on every push: Ruff, the full Django test suite with coverage, and automatic checks before anything deploys
 
 ## Getting started
 
