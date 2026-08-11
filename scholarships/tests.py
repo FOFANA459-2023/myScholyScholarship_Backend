@@ -1192,6 +1192,56 @@ class AssistantExtractSourceTests(TestCase):
         self.assertEqual(response.data["fields"]["name"], "From URL")
         self.assertIn("text", mock_extract.call_args.kwargs)
 
+    @staticmethod
+    def _page_cm(body=b"<p>Fully funded award details</p>"):
+        from unittest.mock import MagicMock
+
+        page = MagicMock()
+        page.headers.get.return_value = "text/html"
+        page.read.return_value = body
+        cm = MagicMock()
+        cm.__enter__.return_value = page
+        return cm
+
+    def test_fetch_url_retries_waf_rejections_with_browser_headers(self):
+        """A 403 to the honest client string retries once looking like a browser."""
+        import urllib.error
+        from unittest.mock import patch
+
+        from .assistant import fetch_url
+
+        rejected = urllib.error.HTTPError(
+            "https://example.org/award", 403, "Forbidden", None, None
+        )
+        with patch("scholarships.assistant._assert_public_host"):
+            with patch(
+                "scholarships.assistant.urllib.request.urlopen",
+                side_effect=[rejected, self._page_cm()],
+            ) as mock_open:
+                kind, text = fetch_url("https://example.org/award")
+        self.assertEqual(kind, "text")
+        self.assertIn("award details", text)
+        first, second = (call.args[0] for call in mock_open.call_args_list)
+        self.assertIn("myScholy", first.get_header("User-agent"))
+        self.assertIn("Chrome", second.get_header("User-agent"))
+        self.assertIn("text/html", second.get_header("Accept"))
+
+    def test_fetch_url_keeps_honest_user_agent_when_it_works(self):
+        """Some WAFs 403 a spoofed browser UA, so the first try must stay honest."""
+        from unittest.mock import patch
+
+        from .assistant import fetch_url
+
+        with patch("scholarships.assistant._assert_public_host"):
+            with patch(
+                "scholarships.assistant.urllib.request.urlopen",
+                return_value=self._page_cm(),
+            ) as mock_open:
+                fetch_url("https://example.org/award")
+        self.assertEqual(mock_open.call_count, 1)
+        request = mock_open.call_args.args[0]
+        self.assertIn("myScholy", request.get_header("User-agent"))
+
     def test_pdf_upload_feeds_extraction(self):
         from unittest.mock import patch
 
@@ -1988,6 +2038,49 @@ class AdminMessagesTests(TestCase):
         self.client.force_authenticate(self.plain_admin)
         self.assertEqual(
             self.client.get("/api/admin/conversations/").status_code, 403
+        )
+
+    def test_conversation_delete_removes_student_messages_keeps_replies(self):
+        ContactMessage.objects.create(
+            name="Ama", email="ama@example.com", message="Another one."
+        )
+        self.client.force_authenticate(self.super_admin)
+        with self.settings(RESEND_API_KEY=""):
+            self.client.post(
+                "/api/admin/conversations/ama@example.com/reply/",
+                {"body": "Kept in the sent-mail record."},
+                format="json",
+            )
+        response = self.client.delete("/api/admin/conversations/ama@example.com/")
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(
+            ContactMessage.objects.filter(email="ama@example.com").exists()
+        )
+        self.assertEqual(
+            OutboundMessage.objects.filter(to_email="ama@example.com").count(), 1
+        )
+        inbox = self.client.get("/api/admin/conversations/").json()
+        self.assertNotIn(
+            "ama@example.com", [row["email"] for row in inbox["results"]]
+        )
+
+    def test_conversation_delete_requires_super_admin(self):
+        self.client.force_authenticate(self.plain_admin)
+        self.assertEqual(
+            self.client.delete(
+                "/api/admin/conversations/ama@example.com/"
+            ).status_code,
+            403,
+        )
+        self.assertTrue(ContactMessage.objects.filter(email="ama@example.com").exists())
+
+    def test_conversation_delete_unknown_address_is_404(self):
+        self.client.force_authenticate(self.super_admin)
+        self.assertEqual(
+            self.client.delete(
+                "/api/admin/conversations/nobody@example.com/"
+            ).status_code,
+            404,
         )
 
     def test_reply_defaults_to_re_plus_student_subject(self):

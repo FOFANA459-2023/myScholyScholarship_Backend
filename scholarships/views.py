@@ -1509,19 +1509,25 @@ def conversations(request):
     )
 
 
-@api_view(["GET", "PATCH"])
+@api_view(["GET", "PATCH", "DELETE"])
 @permission_classes([IsSuperAdmin])
 def conversation_detail(request, email):
     """One sender's full exchange, oldest first, like an email thread.
 
     ``direction`` marks who wrote each item: ``in`` for the student's
     contact-form messages, ``out`` for admin replies sent from the myScholy
-    address. PATCH marks the whole thread handled/unhandled.
+    address. PATCH marks the whole thread handled/unhandled. DELETE removes
+    the student's messages, which drops the thread from the inbox; admin
+    replies are kept so the Sent tab stays a complete outgoing-mail record.
     """
     inbound = list(ContactMessage.objects.filter(email__iexact=email))
     outbound = list(OutboundMessage.objects.filter(to_email__iexact=email))
     if not inbound and not outbound:
         return Response(status=404)
+
+    if request.method == "DELETE":
+        ContactMessage.objects.filter(email__iexact=email).delete()
+        return Response(status=204)
 
     if request.method == "PATCH":
         is_handled = request.data.get("is_handled")
